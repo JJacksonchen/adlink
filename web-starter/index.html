@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AdLink — 广告数据底座 & AI-Native MCP 控制台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo-dot"></div>
+        <div>
+          <h1>AdLink</h1>
+          <p>企业级广告数据底座</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-btn active" data-tab="overview">口径对账总览</button>
+        <button class="nav-btn" data-tab="governance">人户关系与项目</button>
+        <button class="nav-btn" data-tab="creatives">创意归因与工时</button>
+        <button class="nav-btn" data-tab="platforms">媒体接入与状态</button>
+        <button class="nav-btn" data-tab="agents">多端 Agent MCP</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="pill" id="health-pill">检测服务中...</div>
+        <button class="sync-btn" id="sync-btn">一键触发并发同步 (30天)</button>
+        <div class="hint">自定义前端模板 · 可直接替换为 React/Vue/小程序</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <h2 id="page-title">口径对账总览</h2>
+          <p class="subtitle">8 大主流媒体 · 消耗/业绩/自定义口径对齐 · 人户归因 · 创作工作量打通</p>
+        </div>
+        <div class="controls">
+          <label>开始日期 <input type="date" id="start-date" /></label>
+          <label>结束日期 <input type="date" id="end-date" /></label>
+          <label>消耗口径
+            <select id="spend-caliber">
+              <option value="gross_media_cost_yuan">账面总消耗 (现金+赠款)</option>
+              <option value="cash_cost_yuan">现金消耗</option>
+              <option value="net_after_rebate_cost_yuan">返点后净消耗</option>
+              <option value="full_funnel_cost_yuan">全域投入 (含商单+制作)</option>
+            </select>
+          </label>
+          <label>业绩口径
+            <select id="perf-caliber">
+              <option value="platform_gmv_yuan">平台回传 GMV</option>
+              <option value="agency_gross_billing_yuan">代理商毛流水</option>
+              <option value="agency_net_revenue_yuan">代理商净营收</option>
+            </select>
+          </label>
+          <button class="primary-btn" id="refresh-btn">刷新分析</button>
+        </div>
+      </header>
+
+      <section class="tab-panel active" id="tab-overview">
+        <div class="kpi-grid" id="kpi-grid"></div>
+        <div class="card">
+          <div class="card-header">
+            <h3>分平台口径对账明细</h3>
+            <span class="tag" id="custom-caliber-tags"></span>
+          </div>
+          <div class="table-wrap">
+            <table id="platform-table">
+              <thead>
+                <tr>
+                  <th>平台</th>
+                  <th>当前消耗口径(元)</th>
+                  <th>现金 / 赠款(元)</th>
+                  <th>商单+服务费(元)</th>
+                  <th>当前业绩口径(元)</th>
+                  <th>账面ROI / 全域ROI</th>
+                  <th>CTR / CVR</th>
+                  <th>自定义净ROI</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-governance">
+        <div class="two-col">
+          <div class="card">
+            <h3>项目类型分类汇总</h3>
+            <div class="table-wrap">
+              <table id="project-type-table">
+                <thead>
+                  <tr><th>项目分类</th><th>账面消耗(元)</th><th>现金消耗(元)</th><th>GMV(元)</th><th>全域ROI</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h3>人-户关系归因 (含分摊权重与生效期)</h3>
+            <div class="table-wrap">
+              <table id="person-table">
+                <thead>
+                  <tr><th>成员</th><th>归因账面消耗(元)</th><th>代理商净营收(元)</th><th>归因GMV(元)</th><th>ROI</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>人-户绑定明细</h3>
+          <div class="table-wrap">
+            <table id="bindings-table">
+              <thead>
+                <tr><th>绑定ID</th><th>成员ID</th><th>账户ID</th><th>角色</th><th>分摊权重</th><th>生效日期</th><th>失效日期</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-creatives">
+        <div class="card">
+          <h3>创作者工时产投比排行 (内部创作工作量与投放数据归因打通)</h3>
+          <div class="table-wrap">
+            <table id="creator-table">
+              <thead>
+                <tr><th>创作者</th><th>部门</th><th>参与创意数</th><th>总工时(h)</th><th>归因消耗(元)</th><th>归因GMV(元)</th><th>单小时产出GMV(元/h)</th><th>归因ROI</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <h3>跨平台种草+加热全链路归因 (note_id / bvid)</h3>
+            <div class="table-wrap">
+              <table id="seeding-table">
+                <thead>
+                  <tr><th>内容ID</th><th>种草媒体</th><th>加热媒体</th><th>达人商单+服务费</th><th>加热消耗</th><th>全域ROI</th><th>全域CPE(元)</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h3>创意分类与素材ROI明细</h3>
+            <div class="table-wrap">
+              <table id="creative-table">
+                <thead>
+                  <tr><th>编码</th><th>格式/钩子</th><th>场景</th><th>工时</th><th>制作费</th><th>媒体消耗</th><th>GMV</th><th>ROI</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-platforms">
+        <div class="card">
+          <h3>8 大媒体官方 API 对接矩阵 (10 连接器)</h3>
+          <div class="table-wrap">
+            <table id="connectors-table">
+              <thead>
+                <tr><th>平台</th><th>接入模式</th><th>当前运行态</th><th>单次最大窗口</th><th>默认QPS</th><th>官方文档 / Base URL</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="tab-agents">
+        <div class="card">
+          <h3>一键生成主流国内外 Agent MCP 接入配置</h3>
+          <div class="agent-pills" id="agent-pills"></div>
+          <pre class="code-block" id="agent-config-preview"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

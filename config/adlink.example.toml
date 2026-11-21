@@ -1,0 +1,90 @@
+# AdLink Production Configuration Example
+# Copy to `config/adlink.local.toml` and populate environment variables before starting.
+
+[server]
+host = "0.0.0.0"
+port = 8787
+web_dir = "web-starter"
+
+[storage]
+db_path = "data/adlink.db"
+
+[auth]
+# Protect REST API + MCP HTTP endpoints with Bearer tokens or X-Api-Key
+api_keys = ["${ADLINK_API_KEY}"]
+
+[guardrail]
+max_daily_budget_fen = 50000000 # ¥500,000 hard cap per ad mutation
+max_bid_fen = 500000            # ¥5,000 hard bid cap
+max_batch_size = 20
+
+# 1. 腾讯社交广告 (AMS v3.0)
+[connectors.tencent_ads]
+mode = "live"
+app_id = "${TENCENT_ADS_APP_ID}"
+app_secret = "${TENCENT_ADS_SECRET}"
+access_token = "${TENCENT_ADS_ACCESS_TOKEN}"
+refresh_token = "${TENCENT_ADS_REFRESH_TOKEN}"
+
+# 2. 小红书聚光
+[connectors.xhs_juguang]
+mode = "live"
+app_id = "${XHS_APP_ID}"
+app_secret = "${XHS_APP_SECRET}"
+access_token = "${XHS_ACCESS_TOKEN}"
+
+# 3. 小红书乘风
+[connectors.xhs_chengfeng]
+mode = "live"
+app_id = "${XHS_APP_ID}"
+app_secret = "${XHS_APP_SECRET}"
+access_token = "${XHS_ACCESS_TOKEN}"
+
+# 4. 小红书蒲公英 (白名单 Partner API 或通过 /api/v1/ingest 导入官方导出文件)
+[connectors.xhs_pugongying]
+mode = "mock"
+# mode = "live"
+# access_token = "${XHS_PGY_PARTNER_TOKEN}"
+# base_url_override = "https://partner-gateway.example.com"
+
+# 5. B站三连 / 商业起飞
+[connectors.bilibili_sanlian]
+mode = "live"
+access_token = "${BILI_ACCESS_TOKEN}"
+call_source = "${BILI_CALL_SOURCE}"
+
+# 6. B站花火商单 (白名单 Partner API 或通过 /api/v1/ingest 导入官方导出文件)
+[connectors.bilibili_huahuo]
+mode = "mock"
+# mode = "live"
+# access_token = "${BILI_HUAHUO_PARTNER_TOKEN}"
+# base_url_override = "https://partner-gateway.example.com"
+
+# 7. 快手磁力引擎
+[connectors.kuaishou]
+mode = "live"
+app_id = "${KS_APP_ID}"
+app_secret = "${KS_APP_SECRET}"
+access_token = "${KS_ACCESS_TOKEN}"
+
+# 8. 巨量引擎 AD v3.0
+[connectors.ocean_engine_ad]
+mode = "live"
+app_id = "${OCEAN_APP_ID}"
+app_secret = "${OCEAN_APP_SECRET}"
+access_token = "${OCEAN_ACCESS_TOKEN}"
+
+# 9. 巨量本地推 v3.0
+[connectors.ocean_engine_local]
+mode = "live"
+app_id = "${OCEAN_APP_ID}"
+app_secret = "${OCEAN_APP_SECRET}"
+access_token = "${OCEAN_ACCESS_TOKEN}"
+
+# 10. 支付宝灯火 (纯 Rust RSA2 签名)
+[connectors.alipay_denghuo]
+mode = "live"
+app_id = "${ALIPAY_APP_ID}"
+rsa2_private_key_pem = "${ALIPAY_RSA2_PRIVATE_KEY}"
+biz_token = "${ALIPAY_BIZ_TOKEN}"
+alipay_pid = "${ALIPAY_PID}"

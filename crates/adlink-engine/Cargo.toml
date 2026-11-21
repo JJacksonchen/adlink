@@ -1,0 +1,25 @@
+[package]
+name = "adlink-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "High-concurrency long-date-range sync engine, date chunker, token-bucket rate limiter, retry policy, and connector contract"
+
+[dependencies]
+adlink-domain.workspace = true
+adlink-kernel.workspace = true
+adlink-storage.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

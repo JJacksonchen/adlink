@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/adlink-kernel",
+    "crates/adlink-domain",
+    "crates/adlink-storage",
+    "crates/adlink-engine",
+    "crates/adlink-connectors",
+    "crates/adlink-mcp",
+    "crates/adlink-api",
+    "crates/adlink-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.82"
+repository = "https://github.com/zyfjacksonchen-source/adlink"
+homepage = "https://github.com/zyfjacksonchen-source/adlink"
+authors = ["AdLink Contributors"]
+description = "Enterprise Rust ad-data & AI-native MCP middleware bridging Chinese ad platforms and advertiser/agency operations"
+
+[workspace.dependencies]
+adlink-kernel = { path = "crates/adlink-kernel" }
+adlink-domain = { path = "crates/adlink-domain" }
+adlink-storage = { path = "crates/adlink-storage" }
+adlink-engine = { path = "crates/adlink-engine" }
+adlink-connectors = { path = "crates/adlink-connectors" }
+adlink-mcp = { path = "crates/adlink-mcp" }
+adlink-api = { path = "crates/adlink-api" }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "compression-gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dashmap = "6"
+futures-util = "0.3"
+bytes = "1"
+http = "1"
+url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+ring = "0.17"
+hex = "0.4"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
+tokio-stream = "0.1"
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

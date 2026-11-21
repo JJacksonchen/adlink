@@ -1,0 +1,14 @@
+services:
+  adlink:
+    build: .
+    container_name: adlink-middleware
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - ./web-starter:/app/web-starter:ro
+    environment:
+      - RUST_LOG=info
+      - ADLINK_API_KEY=${ADLINK_API_KEY:-}
+    restart: unless-stopped

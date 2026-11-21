@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "adlink": {
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:8787/mcp",
+      "legacySseUrl": "http://127.0.0.1:8787/sse",
+      "headers": {
+        "Authorization": "Bearer ${ADLINK_API_KEY}"
+      }
+    }
+  },
+  "_compatible_clients": [
+    "WorkBuddy",
+    "KimiWork",
+    "TraeWork",
+    "豆包工作",
+    "千问办公",
+    "Claude Code",
+    "Cursor",
+    "Antigravity",
+    "GrokBot",
+    "Muse",
+    "Dots"
+  ]
+}

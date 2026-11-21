@@ -1,0 +1,28 @@
+[package]
+name = "adlink-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Headless REST API, OpenAPI 3.1 spec, Schema-Driven UI contract, and unified MCP+Web Axum router"
+
+[dependencies]
+adlink-connectors.workspace = true
+adlink-domain.workspace = true
+adlink-engine.workspace = true
+adlink-kernel.workspace = true
+adlink-mcp.workspace = true
+adlink-storage.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "adlink-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SQLite WAL production storage plugin and analytics/attribution query engine for AdLink"
+
+[dependencies]
+adlink-domain.workspace = true
+adlink-kernel.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

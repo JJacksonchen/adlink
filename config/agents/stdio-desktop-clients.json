@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "adlink": {
+      "command": "adlink",
+      "args": ["mcp-stdio", "--config", "config/adlink.mock.toml", "--seed-mock"],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,49 @@
+# AdLink Zero-Config Mock Sandbox Configuration
+# Run: adlink serve --config config/adlink.mock.toml --seed-mock
+
+[server]
+host = "0.0.0.0"
+port = 8787
+web_dir = "web-starter"
+
+[storage]
+db_path = "data/adlink-mock.db"
+
+[auth]
+# Leave empty in local development/mock mode to allow unauthenticated local testing.
+api_keys = []
+
+[guardrail]
+max_daily_budget_fen = 50000000 # ¥500,000
+max_bid_fen = 500000            # ¥5,000
+max_batch_size = 20
+
+[connectors.tencent_ads]
+mode = "mock"
+
+[connectors.xhs_juguang]
+mode = "mock"
+
+[connectors.xhs_chengfeng]
+mode = "mock"
+
+[connectors.xhs_pugongying]
+mode = "mock"
+
+[connectors.bilibili_sanlian]
+mode = "mock"
+
+[connectors.bilibili_huahuo]
+mode = "mock"
+
+[connectors.kuaishou]
+mode = "mock"
+
+[connectors.ocean_engine_ad]
+mode = "mock"
+
+[connectors.ocean_engine_local]
+mode = "mock"
+
+[connectors.alipay_denghuo]
+mode = "mock"
