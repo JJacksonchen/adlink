@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adlink_domain::{
-    AdAccount, AdEntity, AdMutationRequest, AdMutationResult, DailyFundStatement, Fen, PlatformId,
-    ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
+    AccountType, AdAccount, AdEntity, AdMutationRequest, AdMutationResult, AuthLoginStrategy,
+    DailyFundStatement, DiscoveredPlatformAccount, Fen, PlatformId, ReportGranularity,
+    ReportLevel, TimeLine, UnifiedReportRow,
 };
 use adlink_engine::{
     AdPlatformConnector, ConnectorError, ConnectorResult, PlatformOnboardGuide, ReportFetchPage,
@@ -26,7 +27,8 @@ use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
 use serde_json::{json, Value};
 
 use crate::http_helpers::{
-    build_http_client, extract_raw_map, json_i64, json_str, json_u64, map_http_status, ConnectorMode,
+    build_http_client, discover_via_official_mcp_bridge, extract_raw_map, json_i64, json_opt_str,
+    json_str, json_u64, map_http_status, mock_discovered_accounts, ConnectorMode,
 };
 use crate::mock_data::mock_entities_for_account;
 use crate::mock_generator::synthesize_chunk_metrics;
@@ -132,15 +134,31 @@ impl AlipayDenghuoConnector {
             let mut orders = 0u64;
             let mut gmv_fen = Fen::from_fen(json_i64(&item, "gmv_fen"));
             let mut conv_gmv_fen = Fen::ZERO;
-            if let Some(conv_list) = item.get("conv_data_list").and_then(Value::as_array) {
+            // Official `alipay.data.dataservice.ad.reportdata.query` returns `conversion_data_list`
+            // (`conv_data_list` retained only as backward-compatible alias).
+            if let Some(conv_list) = item
+                .get("conversion_data_list")
+                .or_else(|| item.get("conv_data_list"))
+                .and_then(Value::as_array)
+            {
                 for c in conv_list {
                     let metric_code = json_str(c, "conversion_type");
+                    let metric_name = json_str(c, "conversion_type_name");
                     let val = json_u64(c, "conversion_result");
                     conv_list_sum += val;
-                    if metric_code.contains("FORM") || metric_code.contains("LEAD") {
+                    if metric_code.contains("FORM")
+                        || metric_code.contains("LEAD")
+                        || metric_name.contains("表单")
+                        || metric_name.contains("线索")
+                    {
                         leads += val;
                     }
-                    if metric_code.contains("ORDER") || metric_code.contains("PAY") {
+                    if metric_code.contains("ORDER")
+                        || metric_code.contains("PAY")
+                        || metric_name.contains("支付")
+                        || metric_name.contains("下单")
+                        || metric_name.contains("成交")
+                    {
                         orders += val;
                         let amt = json_i64(c, "conversion_amount_fen");
                         if amt > 0 {
@@ -152,7 +170,7 @@ impl AlipayDenghuoConnector {
             if conv_total == 0 && conv_list_sum > 0 {
                 conv_total = conv_list_sum;
             }
-            // Prevent 2x double counting when both top-level `gmv_fen` and `conv_data_list` carry order GMV.
+            // Prevent 2x double counting when both top-level `gmv_fen` and `conversion_data_list` carry order GMV.
             if gmv_fen == Fen::ZERO && conv_gmv_fen > Fen::ZERO {
                 gmv_fen = conv_gmv_fen;
             }
@@ -184,7 +202,7 @@ impl AlipayDenghuoConnector {
                 level,
                 entity_id,
                 entity_name,
-                content_id: item.get("material_id").and_then(Value::as_str).map(str::to_string),
+                content_id: json_opt_str(&item, "material_id"),
                 time_line,
                 gross_cost_fen: gross_fen,
                 cash_cost_fen: cash_fen,
@@ -231,17 +249,20 @@ impl AlipayDenghuoConnector {
                     "data_name": m.entity_name,
                     "material_id": m.content_id,
                     "cost": m.gross_cost_fen.as_fen(),
+                    "cost_format": format!("{:.2}", m.gross_cost_fen.to_yuan_f64()),
                     "impression": m.impressions,
                     "click": m.clicks,
                     "conv_result": m.conversions,
                     "gmv_fen": m.gmv_fen.as_fen(),
-                    "conv_data_list": [
+                    "conversion_data_list": [
                         {
                             "conversion_type": "FORM_SUBMIT",
+                            "conversion_type_name": "表单提交线索",
                             "conversion_result": m.leads
                         },
                         {
                             "conversion_type": "MINIAPP_PAY_ORDER",
+                            "conversion_type_name": "小程序支付成交",
                             "conversion_result": m.orders,
                             "conversion_amount_fen": m.gmv_fen.as_fen()
                         }
@@ -278,6 +299,42 @@ impl AdPlatformConnector for AlipayDenghuoConnector {
         build_onboard_guide(PlatformId::AlipayDenghuo, self.mode_label())
     }
 
+    async fn discover_accounts(&self) -> ConnectorResult<Vec<DiscoveredPlatformAccount>> {
+        match &self.mode {
+            ConnectorMode::Mock => Ok(mock_discovered_accounts(
+                PlatformId::AlipayDenghuo,
+                AuthLoginStrategy::OfficialMcpBridge,
+            )),
+            ConnectorMode::Live(creds) => {
+                if let Some(bridged) = discover_via_official_mcp_bridge(
+                    &self.client,
+                    PlatformId::AlipayDenghuo,
+                    creds,
+                )
+                .await
+                {
+                    return Ok(bridged);
+                }
+                if creds.alipay_pid.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![DiscoveredPlatformAccount {
+                    platform: PlatformId::AlipayDenghuo,
+                    platform_account_id: creds.alipay_pid.clone(),
+                    account_name: format!("支付宝灯火主体 ({})", creds.alipay_pid),
+                    account_type: AccountType::BrandDirect,
+                    status: "active".into(),
+                    parent_agent_id: None,
+                    auth_strategy: AuthLoginStrategy::DirectApiAccountDiscovery,
+                    already_registered_ad_account_id: None,
+                    current_person_ids: Vec::new(),
+                    current_project_ids: Vec::new(),
+                    raw_extra: json!({ "app_id": creds.app_id }),
+                }])
+            }
+        }
+    }
+
     async fn fetch_reports_page(&self, req: &ReportFetchRequest) -> ConnectorResult<ReportFetchPage> {
         let payload = match &self.mode {
             ConnectorMode::Mock => Self::build_mock_payload(req),
@@ -294,7 +351,8 @@ impl AdPlatformConnector for AlipayDenghuoConnector {
                 } else {
                     "DETAIL"
                 };
-                let biz_content = json!({
+                // Official Alipay Denghuo docs note PRINCIPAL/MARKET_TARGET do not return conversion_data_list.
+                let mut biz_obj = json!({
                     "biz_token": creds.biz_token,
                     "alipay_pid": if creds.alipay_pid.is_empty() {
                         &req.account.platform_account_id
@@ -305,15 +363,27 @@ impl AdPlatformConnector for AlipayDenghuoConnector {
                     "ad_level": ad_level,
                     "start_date": req.start_date.format("%Y%m%d").to_string(),
                     "end_date": req.end_date.format("%Y%m%d").to_string(),
-                    "show_conv_data": "Y",
                     "conv_time_join_rule": match req.time_line {
                         TimeLine::ReportingTime => "CONVERT_TIME",
                         TimeLine::RequestTime => "CLICK_TIME",
                     },
                     "current": req.page,
                     "page_size": req.page_size,
-                })
-                .to_string();
+                });
+                if ad_level != "PRINCIPAL" {
+                    biz_obj["show_conv_data"] = json!("Y");
+                    if let Some(codes) = creds.extra.get("conv_code_list") {
+                        let parsed: Vec<&str> = codes
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if !parsed.is_empty() {
+                            biz_obj["conv_code_list"] = json!(parsed);
+                        }
+                    }
+                }
+                let biz_content = biz_obj.to_string();
 
                 let cst = FixedOffset::east_opt(8 * 3600).unwrap();
                 let ts = Utc::now()
@@ -423,15 +493,27 @@ impl AdPlatformConnector for AlipayDenghuoConnector {
         account: &AdAccount,
         request: &AdMutationRequest,
     ) -> ConnectorResult<AdMutationResult> {
-        Ok(AdMutationResult {
-            dry_run: request.dry_run,
-            accepted: true,
+        if request.dry_run || matches!(self.mode, ConnectorMode::Mock) {
+            return Ok(AdMutationResult {
+                dry_run: request.dry_run,
+                accepted: true,
+                platform: PlatformId::AlipayDenghuo,
+                ad_account_id: account.id.clone(),
+                affected_entity_ids: request.entity_ids.clone(),
+                summary: format!(
+                    "Alipay Denghuo {:?} simulated ({})",
+                    request.action,
+                    self.mode_label()
+                ),
+                guardrail_notes: vec![
+                    "Note: Alipay Denghuo public OpenAPI does not expose self-serve plan/group status or budget mutation endpoints; live write requires adpub.alipay.com portal or whitelisted ISV API.".into(),
+                ],
+                platform_response: json!({"code": "10000", "mock": matches!(self.mode, ConnectorMode::Mock)}),
+            });
+        }
+        Err(ConnectorError::InvalidRequest {
             platform: PlatformId::AlipayDenghuo,
-            ad_account_id: account.id.clone(),
-            affected_entity_ids: request.entity_ids.clone(),
-            summary: format!("Alipay Denghuo {:?} applied ({})", request.action, self.mode_label()),
-            guardrail_notes: vec![],
-            platform_response: json!({"code": "10000"}),
+            message: "Alipay Denghuo OpenAPI does not publish self-serve campaign status/budget/bid mutation endpoints".into(),
         })
     }
 }

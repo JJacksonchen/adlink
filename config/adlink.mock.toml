@@ -18,6 +18,16 @@ max_daily_budget_fen = 50000000 # ¥500,000
 max_bid_fen = 500000            # ¥5,000
 max_batch_size = 20
 
+# Opt-In Ad Creation (创编：新建计划/单元/创意)
+# SECURITY DEFAULT: DISABLED (`enabled = false`, `risk_acknowledged = false`).
+# Always ask the user whether they want to enable Ad Creation and disclose risks first.
+[ad_creation]
+enabled = false
+risk_acknowledged = false
+require_dry_run_preview = true
+max_initial_daily_budget_fen = 10000000 # ¥100,000
+max_initial_bid_fen = 300000            # ¥3,000
+
 [connectors.tencent_ads]
 mode = "mock"
 

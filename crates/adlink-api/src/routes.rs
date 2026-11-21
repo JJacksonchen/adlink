@@ -4,13 +4,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use adlink_domain::{
-    AdAccount, AdMutationRequest, CreativeAsset, CreativeFormat, CreativeHookType,
-    CustomCaliberDef, Person, PersonAccountBinding, PlatformId, Project, ProjectAccountLink,
+    AdAccount, AdCreationRequest, AdMutationRequest, CreativeAsset, CreativeFormat,
+    CreativeHookType, CustomCaliberDef, FallbackBootstrapProjectRequest, Person,
+    PersonAccountBinding, PlatformId, Project, ProjectAccountLink, RelabelAccountGovernanceRequest,
     ReportQuery, UnifiedReportRow,
 };
 use adlink_engine::{AdPlatformConnector, SyncCoordinator, SyncRequest};
 use adlink_kernel::Kernel;
-use adlink_mcp::{execute_guarded_ad_mutation, mcp_http_router, McpHandler};
+use adlink_mcp::{
+    discover_platform_accounts_enriched, execute_guarded_ad_creation, execute_guarded_ad_mutation,
+    fallback_bootstrap_project, get_ad_creation_disclosure, mcp_http_router,
+    relabel_account_governance, McpHandler,
+};
 use adlink_storage::StorageService;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -58,6 +63,9 @@ pub fn build_app_router(
         .route("/api/v1/plugins", get(plugins_handler))
         .route("/api/v1/platforms", get(platforms_handler))
         .route("/api/v1/platforms/{id}/onboard", get(platform_onboard_handler))
+        .route("/api/v1/platforms/{id}/discover-accounts", get(discover_platform_accounts_handler))
+        .route("/api/v1/governance/relabel", post(relabel_governance_handler))
+        .route("/api/v1/governance/fallback-bootstrap", post(fallback_bootstrap_handler))
         .route("/api/v1/accounts", get(list_accounts).post(upsert_account))
         .route("/api/v1/people", get(list_people).post(upsert_person))
         .route("/api/v1/bindings", get(list_bindings).post(upsert_binding))
@@ -74,6 +82,8 @@ pub fn build_app_router(
         .route("/api/v1/ingest", post(ingest_external))
         .route("/api/v1/ad-ops/campaigns", get(list_ad_entities))
         .route("/api/v1/ad-ops/mutate", post(mutate_ad_entities))
+        .route("/api/v1/ad-creation/status", get(ad_creation_status_handler))
+        .route("/api/v1/ad-creation/create", post(ad_creation_create_handler))
         .route("/api/v1/audit-logs", get(list_audit_logs))
         .with_state(state);
 
@@ -177,6 +187,39 @@ async fn platform_onboard_handler(
         return api_err(StatusCode::SERVICE_UNAVAILABLE, "connector not mounted");
     };
     Json(json!(conn.onboard_guide())).into_response()
+}
+
+async fn discover_platform_accounts_handler(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Ok(platform) = id.parse::<PlatformId>() else {
+        return api_err(StatusCode::NOT_FOUND, format!("unknown platform '{id}'"));
+    };
+    match discover_platform_accounts_enriched(&state.kernel, platform).await {
+        Ok(val) => Json(val).into_response(),
+        Err(msg) => api_err(StatusCode::BAD_REQUEST, msg),
+    }
+}
+
+async fn relabel_governance_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<RelabelAccountGovernanceRequest>,
+) -> Response {
+    match relabel_account_governance(&state.kernel, "rest_api", req).await {
+        Ok(val) => Json(val).into_response(),
+        Err(msg) => api_err(StatusCode::BAD_REQUEST, msg),
+    }
+}
+
+async fn fallback_bootstrap_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<FallbackBootstrapProjectRequest>,
+) -> Response {
+    match fallback_bootstrap_project(&state.kernel, "rest_api", req).await {
+        Ok(val) => Json(val).into_response(),
+        Err(msg) => api_err(StatusCode::BAD_REQUEST, msg),
+    }
 }
 
 async fn list_accounts(State(state): State<ApiState>) -> Response {
@@ -492,6 +535,36 @@ async fn mutate_ad_entities(
     match execute_guarded_ad_mutation(&state.kernel, "rest_api", req).await {
         Ok(res) => Json(json!(res)).into_response(),
         Err(msg) => api_err(StatusCode::BAD_REQUEST, msg),
+    }
+}
+
+async fn ad_creation_status_handler(State(state): State<ApiState>) -> Response {
+    Json(json!(get_ad_creation_disclosure(&state.kernel))).into_response()
+}
+
+async fn ad_creation_create_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<AdCreationRequest>,
+) -> Response {
+    match execute_guarded_ad_creation(&state.kernel, "rest_api", req).await {
+        Ok(res) => Json(json!(res)).into_response(),
+        Err(err) => {
+            let status = if err.is_opt_in_block {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                status,
+                Json(json!({
+                    "error": err.message,
+                    "code": err.code,
+                    "is_opt_in_block": err.is_opt_in_block,
+                    "disclosure": err.disclosure
+                })),
+            )
+                .into_response()
+        }
     }
 }
 

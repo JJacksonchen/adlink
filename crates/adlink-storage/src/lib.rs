@@ -49,12 +49,20 @@ pub trait StorageService: Send + Sync {
         binding: &PersonAccountBinding,
     ) -> StorageResult<()>;
     async fn list_person_account_bindings(&self) -> StorageResult<Vec<PersonAccountBinding>>;
+    async fn delete_person_account_bindings_for_account(
+        &self,
+        ad_account_id: &str,
+    ) -> StorageResult<usize>;
 
     async fn upsert_project(&self, project: &Project) -> StorageResult<()>;
     async fn list_projects(&self) -> StorageResult<Vec<Project>>;
 
     async fn upsert_project_account_link(&self, link: &ProjectAccountLink) -> StorageResult<()>;
     async fn list_project_account_links(&self) -> StorageResult<Vec<ProjectAccountLink>>;
+    async fn delete_project_account_links_for_account(
+        &self,
+        ad_account_id: &str,
+    ) -> StorageResult<usize>;
 
     async fn upsert_creative_asset(&self, asset: &CreativeAsset) -> StorageResult<()>;
     async fn list_creative_assets(&self) -> StorageResult<Vec<CreativeAsset>>;

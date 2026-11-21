@@ -68,12 +68,15 @@ pub fn get_prompt(name: &str, args: Option<&Value>) -> Result<Value, String> {
                 "content": {
                     "type": "text",
                     "text": format!(
-                        "请帮我把广告平台 `{platform}` 的官方 API 接入到 AdLink。\n\
+                        "请帮我把广告平台 `{platform}` 接入到 AdLink。\n\
                         步骤要求：\n\
-                        1. 先调用 `adlink_onboard_guide`（platform=`{platform}`）获取官方开放平台地址、OAuth/RSA2 授权流程、必填字段和注意事项；\n\
-                        2. 向我清晰列出需要我申请的权限点、我需要提供或配置在环境变量中的凭据字段以及对应 `config/adlink.toml` 片段；\n\
+                        1. 先调用 `adlink_onboard_guide`（platform=`{platform}`）与 `adlink_creation_status_and_risks`，说明官方开放平台认证方式与注意事项；\n\
+                        2. 【双层登录策略】\n\
+                           - 最优方案：若该媒体平台已有官方 MCP Server，请优先引导我通过官方 MCP 完成登录鉴权并配置 `official_mcp_endpoint`，随后在 AdLink 调用 `adlink_discover_platform_accounts` 和 `adlink_relabel_account_governance` 重标内部「人-户关系」与「项目归属」；\n\
+                           - 降级方案：若无官方 MCP，则指导我配置 API 凭据，先调用 `adlink_discover_platform_accounts` 拉取账户列表，再调用 `adlink_fallback_bootstrap_project` 自建项目并关联子账户；\n\
                         3. 如果是蒲公英或花火这类没有公开自助 API 的平台，向我说明合规白名单接口与 `adlink_ingest_external_records` 导表打通方案；\n\
-                        4. 指导我配置完成后调用 `adlink_health_check` 和 `adlink_sync_reports` 验证拉数结果。"
+                        4. 【强制安全询问】默认仅引导接入只读拉数权限。你必须主动询问我：『是否需要接入广告创编（新建计划/单元/创意）能力？』，并完整提示创编的 5 项核心风险（误烧预算及单位差异、审核拒审与封户、定向/归因错配、平台接口差异、默认 PAUSED+dry_run 护栏）；未得我确认前，严禁开启 `[ad_creation]`；\n\
+                        5. 指导我完成后调用 `adlink_health_check` 和 `adlink_sync_reports` 验证拉数结果。"
                     )
                 }
             })]

@@ -25,6 +25,7 @@ pub fn ui_schema() -> Value {
             { "id": "governance", "title_zh": "人户关系与项目分类", "title_en": "Governance", "endpoint": "/api/v1/bindings" },
             { "id": "creatives", "title_zh": "创意归因与创作工时", "title_en": "Creative Attribution", "endpoint": "/api/v1/attribution/creatives" },
             { "id": "sync", "title_zh": "高并发同步与接入指引", "title_en": "Sync & Onboarding", "endpoint": "/api/v1/platforms" },
+            { "id": "ad_creation", "title_zh": "安全创编（默认关闭/风险确认）", "title_en": "Opt-In Ad Creation", "endpoint": "/api/v1/ad-creation/status" },
             { "id": "agents", "title_zh": "多端 Agent MCP 接入", "title_en": "Agent MCP Config", "endpoint": "/api/v1/plugins" }
         ],
         "caliber_selectors": {

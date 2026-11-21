@@ -329,6 +329,21 @@ impl StorageService for SqliteStorage {
         self.with_conn(|conn| load_bindings(conn)).await
     }
 
+    async fn delete_person_account_bindings_for_account(
+        &self,
+        ad_account_id: &str,
+    ) -> StorageResult<usize> {
+        let acct = ad_account_id.to_string();
+        self.with_conn(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM person_account_bindings WHERE ad_account_id = ?1",
+                params![acct],
+            )?;
+            Ok(n)
+        })
+        .await
+    }
+
     async fn upsert_project(&self, project: &Project) -> StorageResult<()> {
         let p = project.clone();
         self.with_conn(move |conn| {
@@ -411,6 +426,21 @@ impl StorageService for SqliteStorage {
 
     async fn list_project_account_links(&self) -> StorageResult<Vec<ProjectAccountLink>> {
         self.with_conn(|conn| load_project_links(conn)).await
+    }
+
+    async fn delete_project_account_links_for_account(
+        &self,
+        ad_account_id: &str,
+    ) -> StorageResult<usize> {
+        let acct = ad_account_id.to_string();
+        self.with_conn(move |conn| {
+            let n = conn.execute(
+                "DELETE FROM project_account_links WHERE ad_account_id = ?1",
+                params![acct],
+            )?;
+            Ok(n)
+        })
+        .await
     }
 
     async fn upsert_creative_asset(&self, asset: &CreativeAsset) -> StorageResult<()> {

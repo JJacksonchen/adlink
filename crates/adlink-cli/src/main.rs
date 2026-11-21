@@ -11,7 +11,7 @@ use std::sync::Arc;
 use adlink_api::{build_app_router, ApiAuthConfig};
 use adlink_domain::{PlatformId, ReportGranularity, ReportLevel, TimeLine};
 use adlink_engine::{AdPlatformConnector, SyncCoordinator, SyncRequest};
-use adlink_mcp::{run_stdio_server, McpHandler};
+use adlink_mcp::{get_ad_creation_disclosure, run_stdio_server, McpHandler};
 use adlink_storage::StorageService;
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
@@ -261,7 +261,14 @@ async fn main() -> anyhow::Result<()> {
                         .map(|c| c.onboard_guide())
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&guides)?);
+            let ad_creation_policy = get_ad_creation_disclosure(&runtime.kernel);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ad_creation_policy": ad_creation_policy,
+                    "guides": guides
+                }))?
+            );
         }
         Commands::McpConfig { client, url } => {
             let cfg_path = cli
@@ -297,6 +304,7 @@ async fn main() -> anyhow::Result<()> {
                         })
                 })
                 .collect();
+            let ad_creation = get_ad_creation_disclosure(&runtime.kernel);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -304,6 +312,7 @@ async fn main() -> anyhow::Result<()> {
                     "db_path": cfg.storage.db_path,
                     "storage": db,
                     "plugins_mounted": report.plugin_count,
+                    "ad_creation": ad_creation,
                     "connectors": connectors
                 }))?
             );

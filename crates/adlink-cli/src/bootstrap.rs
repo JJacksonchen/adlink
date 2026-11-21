@@ -32,7 +32,10 @@ pub async fn bootstrap_kernel(cfg: &AdLinkConfig) -> anyhow::Result<Bootstrapped
 
     kernel
         .mount(
-            Arc::new(AdSafetyGuardrailPlugin::new(cfg.guardrail.clone())),
+            Arc::new(AdSafetyGuardrailPlugin::new(
+                cfg.guardrail.clone(),
+                cfg.ad_creation.clone(),
+            )),
             serde_json::to_value(&cfg.guardrail)?,
         )
         .await?;

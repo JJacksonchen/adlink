@@ -18,9 +18,31 @@ max_daily_budget_fen = 50000000 # ¥500,000 hard cap per ad mutation
 max_bid_fen = 500000            # ¥5,000 hard bid cap
 max_batch_size = 20
 
+# Opt-In Ad Creation (广告创编：新建计划/单元/创意)
+# SECURITY DEFAULT: DISABLED (`enabled = false`, `risk_acknowledged = false`).
+# 创编涉及真实资金消耗与审核封户风险，默认关闭。接入前必须先询问用户并告知风险！
+[ad_creation]
+enabled = false
+risk_acknowledged = false
+require_dry_run_preview = true
+max_initial_daily_budget_fen = 10000000 # ¥100,000 cap on initial budget
+max_initial_bid_fen = 300000            # ¥3,000 cap on initial bid
+# allowed_platforms = ["tencent_ads", "ocean_engine_ad", "kuaishou"]
+
+# ------------------------------------------------------------------
+# Two-Tier Platform Login / Auth Strategy per connector:
+# - Optimal (Tier 1): auth_strategy = "official_mcp_bridge" + official_mcp_endpoint
+#   -> Reuse official media platform MCP login/auth, then re-label 人-户/项目关系 in AdLink
+# - Fallback (Tier 2): auth_strategy = "direct_api_account_discovery"
+#   -> Pull advertiser sub-accounts directly via Marketing API and bootstrap custom projects
+# ------------------------------------------------------------------
+
 # 1. 腾讯社交广告 (AMS v3.0)
 [connectors.tencent_ads]
 mode = "live"
+auth_strategy = "official_mcp_bridge"
+# official_mcp_endpoint = "https://official-tencent-ads-mcp.example.com/mcp"
+# official_mcp_auth_tool = "list_accounts"
 app_id = "${TENCENT_ADS_APP_ID}"
 app_secret = "${TENCENT_ADS_SECRET}"
 access_token = "${TENCENT_ADS_ACCESS_TOKEN}"

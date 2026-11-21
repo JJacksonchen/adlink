@@ -10,8 +10,10 @@
 use std::sync::Arc;
 
 use adlink_domain::{
-    AdAccount, AdEntity, AdMutationAction, AdMutationRequest, AdMutationResult, DailyFundStatement,
-    Fen, PlatformId, ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
+    AccountType, AdAccount, AdCreationEntityKind, AdCreationRequest, AdCreationResult, AdEntity,
+    AdMutationAction, AdMutationRequest, AdMutationResult, AuthLoginStrategy, DailyFundStatement,
+    DiscoveredPlatformAccount, Fen, PlatformId, ReportGranularity, ReportLevel, TimeLine,
+    UnifiedReportRow,
 };
 use adlink_engine::{
     AdPlatformConnector, ConnectorError, ConnectorResult, PlatformOnboardGuide, ReportFetchPage,
@@ -22,9 +24,12 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use reqwest::Client;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::http_helpers::{
-    build_http_client, extract_raw_map, json_f64, json_str, json_u64, map_http_status, ConnectorMode,
+    build_http_client, discover_via_official_mcp_bridge, extract_raw_map, json_f64, json_opt_str,
+    json_str, json_u64, map_http_status, merge_json_extra, mock_discovered_accounts,
+    platform_creation_notes, ConnectorMode,
 };
 use crate::mock_data::mock_entities_for_account;
 use crate::mock_generator::synthesize_chunk_metrics;
@@ -58,6 +63,8 @@ impl KuaishouConnector {
         granularity: ReportGranularity,
         level: ReportLevel,
         time_line: TimeLine,
+        page: u32,
+        page_size: u32,
     ) -> ConnectorResult<ReportFetchPage> {
         let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
         if code != 0 {
@@ -104,16 +111,66 @@ impl KuaishouConnector {
                 ReportLevel::Creative | ReportLevel::ContentOrder => json_str(&item, "creative_id"),
             };
 
-            // Kuaishou `charge` & `event_pay_purchase_amount` are reported in Yuan (float) -> Fen.
+            let entity_name = match level {
+                ReportLevel::Account => account.account_name.clone(),
+                ReportLevel::Campaign => {
+                    let c = json_str(&item, "campaign_name");
+                    if c.is_empty() {
+                        account.account_name.clone()
+                    } else {
+                        c
+                    }
+                }
+                ReportLevel::AdGroup => {
+                    let u = json_str(&item, "unit_name");
+                    if !u.is_empty() {
+                        u
+                    } else {
+                        let c = json_str(&item, "campaign_name");
+                        if c.is_empty() {
+                            account.account_name.clone()
+                        } else {
+                            c
+                        }
+                    }
+                }
+                ReportLevel::Creative | ReportLevel::ContentOrder => {
+                    let n = json_str(&item, "creative_name");
+                    if !n.is_empty() {
+                        n
+                    } else {
+                        let u = json_str(&item, "unit_name");
+                        if !u.is_empty() {
+                            u
+                        } else {
+                            let c = json_str(&item, "campaign_name");
+                            if c.is_empty() {
+                                account.account_name.clone()
+                            } else {
+                                c
+                            }
+                        }
+                    }
+                }
+            };
+
+            // Kuaishou `charge` & `event_pay_purchase_amount` are reported in Yuan (Double) -> Fen.
             let gross_fen = Fen::from_yuan_f64(json_f64(&item, "charge"));
             let cash_fen = gross_fen.scale(account.default_cash_ratio);
             let gmv_fen = Fen::from_yuan_f64(json_f64(&item, "event_pay_purchase_amount"));
 
-            let clicks = json_u64(&item, "photo_click").max(json_u64(&item, "click_count"));
+            let clicks = json_u64(&item, "photo_click")
+                .max(json_u64(&item, "aclick"))
+                .max(json_u64(&item, "click_count"));
             let impressions = json_u64(&item, "show").max(json_u64(&item, "exposure_count"));
-            let conversions = json_u64(&item, "activation_count")
-                .max(json_u64(&item, "submit_form_count"))
-                .max(json_u64(&item, "event_pay_purchase_count"));
+            let leads = json_u64(&item, "form_count")
+                .max(json_u64(&item, "submit"))
+                .max(json_u64(&item, "submit_form_count"));
+            let orders = json_u64(&item, "event_pay").max(json_u64(&item, "event_pay_purchase_count"));
+            let conversions = json_u64(&item, "activation")
+                .max(json_u64(&item, "activation_count"))
+                .max(leads)
+                .max(orders);
 
             rows.push(UnifiedReportRow {
                 platform: PlatformId::Kuaishou,
@@ -128,16 +185,9 @@ impl KuaishouConnector {
                 } else {
                     entity_id
                 },
-                entity_name: {
-                    let n = json_str(&item, "creative_name");
-                    if n.is_empty() {
-                        account.account_name.clone()
-                    } else {
-                        n
-                    }
-                },
-                parent_entity_id: item.get("campaign_id").and_then(Value::as_str).map(str::to_string),
-                content_id: item.get("photo_id").and_then(Value::as_str).map(str::to_string),
+                entity_name,
+                parent_entity_id: json_opt_str(&item, "campaign_id"),
+                content_id: json_opt_str(&item, "photo_id"),
                 time_line,
                 gross_cost_fen: gross_fen,
                 cash_cost_fen: cash_fen,
@@ -145,8 +195,8 @@ impl KuaishouConnector {
                 impressions,
                 clicks,
                 conversions,
-                leads: json_u64(&item, "submit_form_count"),
-                orders: json_u64(&item, "event_pay_purchase_count"),
+                leads,
+                orders,
                 gmv_fen,
                 interactions: json_u64(&item, "like") + json_u64(&item, "comment"),
                 video_plays: json_u64(&item, "play_3s"),
@@ -156,10 +206,11 @@ impl KuaishouConnector {
         }
 
         let total_count = data.get("total_count").and_then(Value::as_u64);
+        let fetched_through = u64::from(page.max(1)).saturating_mul(u64::from(page_size.max(1)));
         let has_more = data
             .get("has_more")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or_else(|| total_count.is_some_and(|t| fetched_through < t && !rows.is_empty()));
         Ok(ReportFetchPage {
             rows,
             has_more,
@@ -186,16 +237,23 @@ impl KuaishouConnector {
                     "stat_hour": if m.stat_hour >= 0 { json!(m.stat_hour) } else { Value::Null },
                     "advertiser_id": req.account.platform_account_id,
                     "campaign_id": m.parent_entity_id.clone().unwrap_or_else(|| "ks_camp_01".into()),
+                    "campaign_name": m.entity_name,
                     "unit_id": m.entity_id,
+                    "unit_name": m.entity_name,
                     "creative_id": m.entity_id,
                     "creative_name": m.entity_name,
                     "photo_id": m.content_id,
                     "charge": m.gross_cost_fen.to_yuan_f64(),
                     "show": m.impressions,
                     "photo_click": m.clicks,
+                    "aclick": m.clicks,
+                    "form_count": m.leads,
+                    "submit": m.leads,
                     "submit_form_count": m.leads,
+                    "event_pay": m.orders,
                     "event_pay_purchase_count": m.orders,
                     "event_pay_purchase_amount": m.gmv_fen.to_yuan_f64(),
+                    "activation": m.conversions,
                     "activation_count": m.conversions,
                     "like": m.interactions,
                     "play_3s": m.video_plays,
@@ -229,6 +287,82 @@ impl AdPlatformConnector for KuaishouConnector {
 
     fn onboard_guide(&self) -> PlatformOnboardGuide {
         build_onboard_guide(PlatformId::Kuaishou, self.mode_label())
+    }
+
+    async fn discover_accounts(&self) -> ConnectorResult<Vec<DiscoveredPlatformAccount>> {
+        match &self.mode {
+            ConnectorMode::Mock => Ok(mock_discovered_accounts(
+                PlatformId::Kuaishou,
+                AuthLoginStrategy::OfficialMcpBridge,
+            )),
+            ConnectorMode::Live(creds) => {
+                if let Some(bridged) =
+                    discover_via_official_mcp_bridge(&self.client, PlatformId::Kuaishou, creds)
+                        .await
+                {
+                    return Ok(bridged);
+                }
+                let url = format!("{}/v1/agent/advertiser/list", self.base_url());
+                let resp = self
+                    .client
+                    .post(&url)
+                    .header("Access-Token", creds.access_token.as_str())
+                    .json(&json!({ "page": 1, "page_size": 100 }))
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::Transient {
+                        platform: PlatformId::Kuaishou,
+                        message: e.to_string(),
+                    })?;
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if !status.is_success() {
+                    return Err(map_http_status(PlatformId::Kuaishou, status, &text, None));
+                }
+                let val: Value =
+                    serde_json::from_str(&text).map_err(|e| ConnectorError::ParseError {
+                        platform: PlatformId::Kuaishou,
+                        message: e.to_string(),
+                    })?;
+                let list = val
+                    .get("data")
+                    .and_then(|d| d.get("details").or_else(|| d.get("list")))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(list
+                    .into_iter()
+                    .filter_map(|item| {
+                        let pid = json_str(&item, "advertiser_id");
+                        if pid.is_empty() {
+                            return None;
+                        }
+                        let name = {
+                            let n = json_str(&item, "advertiser_name")
+                                .if_empty_str(|| json_str(&item, "corporation_name"));
+                            if n.is_empty() {
+                                format!("Kuaishou {pid}")
+                            } else {
+                                n
+                            }
+                        };
+                        Some(DiscoveredPlatformAccount {
+                            platform: PlatformId::Kuaishou,
+                            platform_account_id: pid,
+                            account_name: name,
+                            account_type: AccountType::AgencySub,
+                            status: "active".into(),
+                            parent_agent_id: json_opt_str(&item, "agent_id"),
+                            auth_strategy: AuthLoginStrategy::DirectApiAccountDiscovery,
+                            already_registered_ad_account_id: None,
+                            current_person_ids: Vec::new(),
+                            current_project_ids: Vec::new(),
+                            raw_extra: item,
+                        })
+                    })
+                    .collect())
+            }
+        }
     }
 
     async fn fetch_reports_page(&self, req: &ReportFetchRequest) -> ConnectorResult<ReportFetchPage> {
@@ -277,6 +411,8 @@ impl AdPlatformConnector for KuaishouConnector {
             req.granularity,
             req.level,
             req.time_line,
+            req.page,
+            req.page_size,
         )
     }
 
@@ -384,6 +520,177 @@ impl AdPlatformConnector for KuaishouConnector {
             });
         }
         unreachable!()
+    }
+
+    async fn create_ad_entity(
+        &self,
+        account: &AdAccount,
+        request: &AdCreationRequest,
+    ) -> ConnectorResult<AdCreationResult> {
+        let put_status = if request.initial_status.eq_ignore_ascii_case("PAUSED") {
+            2
+        } else {
+            1
+        };
+        let adv_id = account.platform_account_id.parse::<i64>().unwrap_or(0);
+        // CRITICAL: Kuaishou creation APIs use `li` (厘 = 1/1000 Yuan = 0.1 Fen), so `fen * 10 = li`!
+        let (path, mut body) = match request.entity_kind {
+            AdCreationEntityKind::Campaign => {
+                let mut payload = json!({
+                    "advertiser_id": adv_id,
+                    "campaign_name": request.name,
+                    "type": 2,
+                    "put_status": put_status,
+                });
+                if let Some(b_fen) = request.daily_budget_fen {
+                    payload["day_budget"] = json!(b_fen.saturating_mul(10));
+                }
+                ("/v1/campaign/create", payload)
+            }
+            AdCreationEntityKind::AdGroup => {
+                let campaign_id = request.parent_entity_id.clone().ok_or_else(|| {
+                    ConnectorError::InvalidRequest {
+                        platform: PlatformId::Kuaishou,
+                        message: "creating Kuaishou ad_unit requires parent_entity_id (campaign_id)".into(),
+                    }
+                })?;
+                let mut payload = json!({
+                    "advertiser_id": adv_id,
+                    "campaign_id": campaign_id.parse::<i64>().map(Value::from).unwrap_or_else(|_| json!(campaign_id)),
+                    "unit_name": request.name,
+                    "put_status": put_status,
+                });
+                if let Some(b_fen) = request.daily_budget_fen {
+                    payload["day_budget"] = json!(b_fen.saturating_mul(10));
+                }
+                if let Some(bid_fen) = request.bid_fen {
+                    payload["bid"] = json!(bid_fen.saturating_mul(10));
+                }
+                if !request.targeting.is_null() {
+                    payload["target"] = request.targeting.clone();
+                }
+                if let Some(url) = &request.landing_url {
+                    payload["url"] = json!(url);
+                }
+                ("/v2/ad_unit/create", payload)
+            }
+            AdCreationEntityKind::Creative => {
+                let unit_id = request.parent_entity_id.clone().ok_or_else(|| {
+                    ConnectorError::InvalidRequest {
+                        platform: PlatformId::Kuaishou,
+                        message: "creating Kuaishou creative requires parent_entity_id (unit_id)".into(),
+                    }
+                })?;
+                let payload = json!({
+                    "advertiser_id": adv_id,
+                    "unit_id": unit_id.parse::<i64>().map(Value::from).unwrap_or_else(|_| json!(unit_id)),
+                    "creative_name": request.name,
+                    "put_status": put_status,
+                    "creative_material": request.creative_assets,
+                });
+                ("/v2/creative/create", payload)
+            }
+        };
+        merge_json_extra(&mut body, &request.platform_extra);
+
+        let risk_warnings = platform_creation_notes(
+            PlatformId::Kuaishou,
+            Some("Kuaishou creation APIs use `li` (厘: 1 Fen = 10 厘); AdLink automatically converts `daily_budget_fen * 10` and `bid_fen * 10` (whereas report `charge` is in Yuan)."),
+        );
+
+        if request.dry_run || matches!(self.mode, ConnectorMode::Mock) {
+            let created_id = if request.dry_run {
+                None
+            } else {
+                Some(format!(
+                    "ks_new_{}",
+                    &Uuid::new_v4().simple().to_string()[..8]
+                ))
+            };
+            return Ok(AdCreationResult {
+                dry_run: request.dry_run,
+                accepted: true,
+                platform: PlatformId::Kuaishou,
+                ad_account_id: account.id.clone(),
+                entity_kind: request.entity_kind,
+                created_entity_id: created_id.clone(),
+                initial_status: request.initial_status.clone(),
+                summary: format!(
+                    "Kuaishou {:?} creation {} ({})",
+                    request.entity_kind,
+                    if request.dry_run { "previewed" } else { "created in mock" },
+                    self.mode_label()
+                ),
+                risk_warnings,
+                guardrail_notes: vec![format!("Target endpoint: POST {}{}", self.base_url(), path)],
+                platform_payload_preview: body,
+                platform_response: json!({
+                    "code": 0,
+                    "mock": matches!(self.mode, ConnectorMode::Mock),
+                    "data": { "id": created_id }
+                }),
+            });
+        }
+
+        if let ConnectorMode::Live(creds) = &self.mode {
+            let url = format!("{}{}", self.base_url(), path);
+            let resp = self
+                .client
+                .post(&url)
+                .header("Access-Token", creds.access_token.as_str())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| ConnectorError::Transient {
+                    platform: PlatformId::Kuaishou,
+                    message: e.to_string(),
+                })?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return Err(map_http_status(PlatformId::Kuaishou, status, &text, None));
+            }
+            let val: Value = serde_json::from_str(&text).unwrap_or(json!({"raw": text}));
+            if val.get("code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+                return Err(ConnectorError::InvalidRequest {
+                    platform: PlatformId::Kuaishou,
+                    message: format!("Kuaishou create error: {val}"),
+                });
+            }
+            let data = val.get("data").unwrap_or(&val);
+            let created_id = json_opt_str(data, "campaign_id")
+                .or_else(|| json_opt_str(data, "unit_id"))
+                .or_else(|| json_opt_str(data, "creative_id"));
+            return Ok(AdCreationResult {
+                dry_run: false,
+                accepted: true,
+                platform: PlatformId::Kuaishou,
+                ad_account_id: account.id.clone(),
+                entity_kind: request.entity_kind,
+                created_entity_id: created_id,
+                initial_status: request.initial_status.clone(),
+                summary: format!("Kuaishou live {:?} created", request.entity_kind),
+                risk_warnings,
+                guardrail_notes: vec![],
+                platform_payload_preview: body,
+                platform_response: val,
+            });
+        }
+        unreachable!()
+    }
+}
+
+trait EmptyFallback {
+    fn if_empty_str(self, f: impl FnOnce() -> String) -> String;
+}
+
+impl EmptyFallback for String {
+    fn if_empty_str(self, f: impl FnOnce() -> String) -> String {
+        if self.trim().is_empty() {
+            f()
+        } else {
+            self
+        }
     }
 }
 

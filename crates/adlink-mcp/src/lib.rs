@@ -1,5 +1,6 @@
 //! Core MCP handler, transport exports, and Safety Guardrail kernel plugin.
 
+pub mod auth_flows;
 pub mod guardrail;
 pub mod http;
 pub mod prompts;
@@ -14,7 +15,13 @@ use std::sync::Arc;
 use adlink_kernel::Kernel;
 use serde_json::{json, Value};
 
-pub use guardrail::{execute_guarded_ad_mutation, AdSafetyGuardrailPlugin, GuardrailConfig};
+pub use auth_flows::{
+    discover_platform_accounts_enriched, fallback_bootstrap_project, relabel_account_governance,
+};
+pub use guardrail::{
+    execute_guarded_ad_creation, execute_guarded_ad_mutation, get_ad_creation_disclosure,
+    AdCreationGuardrailError, AdSafetyGuardrailPlugin, GuardrailConfig,
+};
 pub use http::mcp_http_router;
 pub use protocol::{negotiate_protocol_version, JsonRpcRequest, JsonRpcResponse};
 pub use stdio::run_stdio_server;
@@ -83,7 +90,7 @@ impl McpHandler {
                             "name": "adlink-mcp",
                             "version": env!("CARGO_PKG_VERSION")
                         },
-                        "instructions": "AdLink connects 8 mainstream Chinese ad platforms (10 connectors) with enterprise governance (人-户关系, 项目分类, 创意归因, 消耗/业绩/自定义口径). Call adlink_onboard_guide to help the user connect live platform credentials, or query/sync in mock mode immediately."
+                        "instructions": "AdLink connects 8 mainstream Chinese ad platforms (10 connectors) with enterprise governance (人-户关系, 项目分类, 创意归因, 消耗/业绩/自定义口径). Prefer Official MCP auth bridge + governance relabeling (`adlink_relabel_account_governance`), or fallback to `adlink_discover_platform_accounts` + `adlink_fallback_bootstrap_project`. Ad Creation (`创编`) is DISABLED by default: call `adlink_creation_status_and_risks`, ALWAYS ask the user before enabling it, and disclose creation risks."
                     }),
                 )
             }
@@ -145,13 +152,15 @@ impl McpHandler {
 mod tests {
     use super::*;
     use adlink_connectors::{mount_all_connectors, seed_mock_governance, ConnectorSuiteConfig};
-    use adlink_storage::{SqliteStorage, SqliteStoragePlugin};
+    use adlink_storage::{SqliteStorage, SqliteStoragePlugin, StorageService};
     use axum::body::Body;
     use axum::http::Request;
     use tempfile::tempdir;
     use tower::ServiceExt;
 
-    async fn setup_handler() -> (tempfile::TempDir, Arc<McpHandler>) {
+    async fn setup_handler_with_creation(
+        creation_cfg: adlink_domain::AdCreationConfig,
+    ) -> (tempfile::TempDir, Arc<McpHandler>, Arc<SqliteStorage>) {
         let dir = tempdir().unwrap();
         let storage = Arc::new(SqliteStorage::open(dir.path().join("mcp.db")).unwrap());
         let kernel = Arc::new(Kernel::new());
@@ -164,7 +173,10 @@ mod tests {
             .unwrap();
         kernel
             .mount(
-                Arc::new(AdSafetyGuardrailPlugin::new(GuardrailConfig::default())),
+                Arc::new(AdSafetyGuardrailPlugin::new(
+                    GuardrailConfig::default(),
+                    creation_cfg,
+                )),
                 Value::Null,
             )
             .await
@@ -173,7 +185,13 @@ mod tests {
             .await
             .unwrap();
         seed_mock_governance(storage.as_ref()).await.unwrap();
-        (dir, Arc::new(McpHandler::new(kernel, None)))
+        (dir, Arc::new(McpHandler::new(kernel, None)), storage)
+    }
+
+    async fn setup_handler() -> (tempfile::TempDir, Arc<McpHandler>) {
+        let (dir, handler, _storage) =
+            setup_handler_with_creation(adlink_domain::AdCreationConfig::default()).await;
+        (dir, handler)
     }
 
     #[tokio::test]
@@ -222,7 +240,7 @@ mod tests {
             .await
             .unwrap();
         let list_json: Value = serde_json::from_slice(&list_bytes).unwrap();
-        assert_eq!(list_json["result"]["tools"].as_array().unwrap().len(), 19);
+        assert_eq!(list_json["result"]["tools"].as_array().unwrap().len(), 24);
 
         // 3. Guardrail blocks excessive budget mutation (`999_999_999` fen > 50_000_000 cap).
         let bad_mut = handler
@@ -445,5 +463,323 @@ mod tests {
                 .unwrap();
             assert!(pget.error.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn ad_creation_opt_in_gate_and_two_tier_login_relabel_work() {
+        // A. Default AdCreationConfig blocks ad creation with AD_CREATION_DISABLED_ASK_USER + risk warnings
+        let (_dir, default_handler) = setup_handler().await;
+        let status_call = default_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 100,
+                    "method": "tools/call",
+                    "params": { "name": "adlink_creation_status_and_risks", "arguments": {} }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        let status_sc = &status_call.result.unwrap()["structuredContent"];
+        assert_eq!(status_sc["enabled"], false);
+        assert_eq!(status_sc["risk_acknowledged"], false);
+        assert_eq!(status_sc["risk_warnings"].as_array().unwrap().len(), 5);
+
+        let blocked = default_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 101,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_ad_create",
+                        "arguments": {
+                            "platform": "tencent_ads",
+                            "ad_account_id": "acc-tencent-01",
+                            "entity_kind": "ad_group",
+                            "name": "Blocked Default Create",
+                            "daily_budget_fen": 100000,
+                            "reason": "should be blocked by default"
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(blocked["isError"], true);
+        let blocked_txt = blocked["content"][0]["text"].as_str().unwrap();
+        assert!(blocked_txt.contains("AD_CREATION_DISABLED_ASK_USER"));
+        assert!(blocked_txt.contains("risk_warnings"));
+
+        // B. Partial opt-in without risk_acknowledged is still rejected
+        let (_dir2, unack_handler, _st2) = setup_handler_with_creation(adlink_domain::AdCreationConfig {
+            enabled: true,
+            risk_acknowledged: false,
+            ..Default::default()
+        })
+        .await;
+        let unack = unack_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 102,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_ad_create",
+                        "arguments": {
+                            "platform": "tencent_ads",
+                            "ad_account_id": "acc-tencent-01",
+                            "entity_kind": "ad_group",
+                            "name": "Unacked Create",
+                            "daily_budget_fen": 100000,
+                            "reason": "should require risk acknowledgement"
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(unack["isError"], true);
+        assert!(unack["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("AD_CREATION_RISK_NOT_ACKNOWLEDGED"));
+
+        // C. Full opt-in: dry_run preview -> enforce preview_confirmed -> live mock creation persists entity!
+        let (_dir3, enabled_handler, storage3) =
+            setup_handler_with_creation(adlink_domain::AdCreationConfig {
+                enabled: true,
+                risk_acknowledged: true,
+                ..Default::default()
+            })
+            .await;
+
+        let dry = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 103,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_ad_create",
+                        "arguments": {
+                            "platform": "kuaishou",
+                            "ad_account_id": "acc-kuaishou-01",
+                            "entity_kind": "campaign",
+                            "name": "OptedIn KS Campaign",
+                            "daily_budget_fen": 80000,
+                            "dry_run": true,
+                            "reason": "preview budget conversion"
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(dry["isError"], false);
+        assert_eq!(
+            dry["structuredContent"]["platform_payload_preview"]["day_budget"],
+            800000
+        );
+
+        let no_confirm = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 104,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_ad_create",
+                        "arguments": {
+                            "platform": "kuaishou",
+                            "ad_account_id": "acc-kuaishou-01",
+                            "entity_kind": "campaign",
+                            "name": "No Confirm Live",
+                            "daily_budget_fen": 80000,
+                            "dry_run": false,
+                            "preview_confirmed": false,
+                            "reason": "bypass check"
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(no_confirm["isError"], true);
+        assert!(no_confirm["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("DRY_RUN_PREVIEW_REQUIRED"));
+
+        let confirmed = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 105,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_ad_create",
+                        "arguments": {
+                            "platform": "kuaishou",
+                            "ad_account_id": "acc-kuaishou-01",
+                            "entity_kind": "campaign",
+                            "name": "Confirmed Mock Campaign",
+                            "daily_budget_fen": 80000,
+                            "dry_run": false,
+                            "preview_confirmed": true,
+                            "reason": "user approved creation"
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(confirmed["isError"], false);
+        let new_id = confirmed["structuredContent"]["created_entity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let saved_entities = storage3
+            .list_ad_entities(Some(adlink_domain::PlatformId::Kuaishou), Some("acc-kuaishou-01"))
+            .await
+            .unwrap();
+        assert!(saved_entities.iter().any(|e| e.entity_id == new_id));
+
+        // D. Two-tier Login Architecture: Discover -> Tier-1 Relabel (replaces cleanly) -> Tier-2 Fallback Bootstrap
+        let disc = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 106,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_discover_platform_accounts",
+                        "arguments": { "platform": "tencent_ads" }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(disc["isError"], false);
+        assert_eq!(disc["structuredContent"]["discovered_count"], 3);
+        assert_eq!(
+            disc["structuredContent"]["accounts"][0]["already_registered_ad_account_id"],
+            "acc-tencent-01"
+        );
+
+        let relabel = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 107,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_relabel_account_governance",
+                        "arguments": {
+                            "platform": "tencent_ads",
+                            "platform_account_id": "38291044",
+                            "auth_strategy": "official_mcp_bridge",
+                            "official_mcp_endpoint": "https://mcp.example.com/tencent",
+                            "replace_existing_bindings": true,
+                            "person_bindings": [{
+                                "person_id": "per-media-chen",
+                                "relation_role": "primary_optimizer",
+                                "split_weight": 1.0,
+                                "effective_from": "2026-11-01"
+                            }],
+                            "replace_existing_project_links": true,
+                            "project_links": [{
+                                "project_id": "prj-ecom-skincare",
+                                "allocation_weight": 1.0
+                            }]
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(relabel["isError"], false, "relabel failed: {relabel}");
+        let acct_bindings: Vec<_> = storage3
+            .list_person_account_bindings()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.ad_account_id == "acc-tencent-01")
+            .collect();
+        assert_eq!(acct_bindings.len(), 1);
+        assert_eq!(acct_bindings[0].person_id, "per-media-chen");
+
+        let bootstrap = enabled_handler
+            .handle_raw_json(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 108,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "adlink_fallback_bootstrap_project",
+                        "arguments": {
+                            "project": {
+                                "id": "prj-fallback-new",
+                                "org_id": "org-starpulse",
+                                "code": "FB-NEW-01",
+                                "name": "降级自建项目测试",
+                                "client_name": "测试品牌",
+                                "brand_name": "TestBrand",
+                                "project_type": "ecommerce_gmv",
+                                "business_line": "美妆",
+                                "settlement_mode": "media_spend_plus_fee",
+                                "budget_fen": 5000000,
+                                "start_date": "2026-11-01",
+                                "tags": ["fallback"]
+                            },
+                            "accounts": [{
+                                "platform": "tencent_ads",
+                                "platform_account_id": "3829104401",
+                                "account_name": "新拉取子账户A",
+                                "owner_person_id": "per-opt-lin"
+                            }]
+                        }
+                    }
+                })
+                .to_string(),
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(bootstrap["isError"], false, "bootstrap failed: {bootstrap}");
+        let projects = storage3.list_projects().await.unwrap();
+        assert!(projects.iter().any(|p| p.id == "prj-fallback-new"));
     }
 }

@@ -24,6 +24,10 @@ pub enum HookPoint {
     BeforeAdMutate,
     /// Fired after executing an ad mutation (useful for immutable audit logs & webhooks).
     AfterAdMutate,
+    /// Fired before creating a new ad entity (enforces opt-in consent, risk acknowledgment, and budget caps).
+    BeforeAdCreate,
+    /// Fired after creating a new ad entity (immutable audit logs & webhooks).
+    AfterAdCreate,
     /// Fired during caliber evaluation to allow plugins to inject custom derived metrics.
     EnrichMetrics,
 }
@@ -36,6 +40,8 @@ impl fmt::Display for HookPoint {
             Self::AfterNormalizeRow => "after_normalize_row",
             Self::BeforeAdMutate => "before_ad_mutate",
             Self::AfterAdMutate => "after_ad_mutate",
+            Self::BeforeAdCreate => "before_ad_create",
+            Self::AfterAdCreate => "after_ad_create",
             Self::EnrichMetrics => "enrich_metrics",
         };
         f.write_str(name)

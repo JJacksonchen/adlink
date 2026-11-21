@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use adlink_domain::{
-    AdAccount, AdEntity, AdMutationRequest, AdMutationResult, DailyFundStatement, Fen, PlatformId,
-    ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
+    AdAccount, AdEntity, AdMutationRequest, AdMutationResult, AuthLoginStrategy,
+    DailyFundStatement, DiscoveredPlatformAccount, Fen, PlatformId, ReportGranularity,
+    ReportLevel, TimeLine, UnifiedReportRow,
 };
 use adlink_engine::{
     AdPlatformConnector, ConnectorError, ConnectorResult, PlatformOnboardGuide, ReportFetchPage,
@@ -21,7 +22,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 
 use crate::http_helpers::{
-    build_http_client, extract_raw_map, json_i64, json_str, json_u64, map_http_status, ConnectorMode,
+    build_http_client, discover_via_official_mcp_bridge, extract_raw_map, json_i64, json_opt_str,
+    json_str, json_u64, map_http_status, mock_discovered_accounts, ConnectorMode,
 };
 use crate::mock_data::mock_entities_for_account;
 use crate::mock_generator::synthesize_chunk_metrics;
@@ -84,7 +86,7 @@ impl BilibiliHuahuoConnector {
                     order_id
                 },
                 entity_name: json_str(&item, "order_title"),
-                content_id: item.get("bvid").and_then(Value::as_str).map(str::to_string),
+                content_id: json_opt_str(&item, "bvid"),
                 time_line,
                 gross_cost_fen: Fen::ZERO,
                 cash_cost_fen: Fen::ZERO,
@@ -168,6 +170,27 @@ impl AdPlatformConnector for BilibiliHuahuoConnector {
 
     fn onboard_guide(&self) -> PlatformOnboardGuide {
         build_onboard_guide(PlatformId::BilibiliHuahuo, self.mode_label())
+    }
+
+    async fn discover_accounts(&self) -> ConnectorResult<Vec<DiscoveredPlatformAccount>> {
+        match &self.mode {
+            ConnectorMode::Mock => Ok(mock_discovered_accounts(
+                PlatformId::BilibiliHuahuo,
+                AuthLoginStrategy::OfficialMcpBridge,
+            )),
+            ConnectorMode::Live(creds) => {
+                if let Some(bridged) = discover_via_official_mcp_bridge(
+                    &self.client,
+                    PlatformId::BilibiliHuahuo,
+                    creds,
+                )
+                .await
+                {
+                    return Ok(bridged);
+                }
+                Ok(Vec::new())
+            }
+        }
     }
 
     async fn fetch_reports_page(&self, req: &ReportFetchRequest) -> ConnectorResult<ReportFetchPage> {

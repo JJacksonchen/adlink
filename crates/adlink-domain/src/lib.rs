@@ -1,6 +1,7 @@
 //! Canonical domain models for AdLink (`adlink-domain`).
 
 pub mod ad_ops;
+pub mod auth_bridge;
 pub mod caliber;
 pub mod creative;
 pub mod formula;
@@ -9,9 +10,18 @@ pub mod money;
 pub mod platform;
 pub mod report;
 
-pub use ad_ops::{AdEntity, AdMutationAction, AdMutationRequest, AdMutationResult, AuditLogEntry};
+pub use ad_ops::{
+    AdCreationConfig, AdCreationEntityKind, AdCreationRequest, AdCreationResult,
+    AdCreationRiskDisclosure, AdEntity, AdMutationAction, AdMutationRequest, AdMutationResult,
+    AuditLogEntry, PlatformCreationCapability,
+};
+pub use auth_bridge::{
+    AuthLoginStrategy, DiscoveredPlatformAccount, FallbackBootstrapProjectRequest,
+    FallbackSubAccountBind, RelabelAccountGovernanceRequest, RelabelPersonBindingInput,
+    RelabelProjectLinkInput,
+};
 pub use caliber::{
-    CaliberEvaluator, CaliberInput, CaliberReconciliation, CaliberCategory, CustomCaliberDef,
+    CaliberCategory, CaliberEvaluator, CaliberInput, CaliberReconciliation, CustomCaliberDef,
     PerformanceCaliber, SpendCaliber,
 };
 pub use creative::{
@@ -25,7 +35,10 @@ pub use governance::{
     PersonRole, Project, ProjectAccountLink, ProjectType, SettlementMode,
 };
 pub use money::Fen;
-pub use platform::{ApiAccessMode, OfficialFieldMapping, ParsePlatformError, PlatformId, PlatformMeta};
+pub use platform::{
+    AdCreationSupport, ApiAccessMode, OfficialFieldMapping, ParsePlatformError, PlatformId,
+    PlatformMeta,
+};
 pub use report::{
     DailyFundStatement, QueryDimension, ReportGranularity, ReportLevel, ReportQuery,
     SyncCheckpoint, SyncJobRecord, TimeLine, UnifiedReportRow,

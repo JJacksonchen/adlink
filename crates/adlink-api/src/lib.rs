@@ -38,7 +38,10 @@ mod tests {
             .unwrap();
         kernel
             .mount(
-                Arc::new(AdSafetyGuardrailPlugin::new(GuardrailConfig::default())),
+                Arc::new(AdSafetyGuardrailPlugin::new(
+                    GuardrailConfig::default(),
+                    adlink_domain::AdCreationConfig::default(),
+                )),
                 Value::Null,
             )
             .await
@@ -108,5 +111,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sync_res.status(), 200);
+
+        // Ad Creation is disabled by default -> status shows enabled=false & create returns 403 FORBIDDEN with disclosure.
+        let ac_status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/ad-creation/status")
+                    .header("Authorization", "Bearer secret-token-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ac_status.status(), 200);
+
+        let ac_create_blocked = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/ad-creation/create")
+                    .header("Authorization", "Bearer secret-token-1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "platform": "tencent_ads",
+                            "ad_account_id": "acc-tencent-01",
+                            "entity_kind": "ad_group",
+                            "name": "API Blocked",
+                            "daily_budget_fen": 100000,
+                            "reason": "test default block"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ac_create_blocked.status(), 403);
+
+        // Two-tier account discovery REST route works cleanly.
+        let disc = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/platforms/tencent_ads/discover-accounts")
+                    .header("Authorization", "Bearer secret-token-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disc.status(), 200);
     }
 }

@@ -251,12 +251,12 @@ mod tests {
             .unwrap();
         assert_eq!(page1.rows.len(), 2);
         assert!(page1.has_more);
-        let raw_conv_amt = page1.rows[0].raw_fields["conv_data_list"][1]["conversion_amount_fen"]
+        let raw_conv_amt = page1.rows[0].raw_fields["conversion_data_list"][1]["conversion_amount_fen"]
             .as_i64()
             .unwrap();
         assert_eq!(page1.rows[0].gmv_fen.as_fen(), raw_conv_amt);
 
-        // Real-style payload where top-level `gmv_fen` is omitted and only `conv_data_list` provides it.
+        // Real-style payload using official `conversion_data_list` (without `conv_data_list`).
         let real_payload = serde_json::json!({
             "alipay_data_dataservice_ad_reportdata_query_response": {
                 "code": "10000",
@@ -268,9 +268,9 @@ mod tests {
                     "cost": 12000,
                     "impression": 4000,
                     "click": 200,
-                    "conv_data_list": [
-                        { "conversion_type": "FORM_SUBMIT", "conversion_result": 5 },
-                        { "conversion_type": "MINIAPP_PAY_ORDER", "conversion_result": 8, "conversion_amount_fen": 45000 }
+                    "conversion_data_list": [
+                        { "conversion_type": "FORM_SUBMIT", "conversion_type_name": "表单线索", "conversion_result": 5 },
+                        { "conversion_type": "MINIAPP_PAY_ORDER", "conversion_type_name": "小程序支付", "conversion_result": 8, "conversion_amount_fen": 45000 }
                     ]
                 }]
             }
@@ -346,6 +346,8 @@ mod tests {
             ReportGranularity::Daily,
             ReportLevel::Account,
             TimeLine::ReportingTime,
+            1,
+            20,
         )
         .unwrap_err();
         assert!(matches!(ks_rl, ConnectorError::RateLimited { .. }));
@@ -357,6 +359,9 @@ mod tests {
             ReportGranularity::Daily,
             ReportLevel::Account,
             TimeLine::ReportingTime,
+            1,
+            20,
+            false,
         )
         .unwrap_err();
         assert!(matches!(xhs_auth, ConnectorError::AuthError { .. }));
@@ -378,5 +383,231 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(ali_err, ConnectorError::InvalidRequest { .. }));
+    }
+
+    #[tokio::test]
+    async fn live_field_audit_fixes_parse_official_shapes_accurately() {
+        // 1. Tencent Ads v3.0: cheout_pv_1d, cheout_fd, web_leads_count, numeric campaign/adgroup/creative IDs
+        let tc_acct = sample_account(PlatformId::TencentAds);
+        let tc_page = TencentAdsConnector::parse_official_reports_response(
+            &serde_json::json!({
+                "code": 0,
+                "data": {
+                    "list": [{
+                        "date": "2026-11-10",
+                        "account_id": 38291044,
+                        "campaign_id": 910022,
+                        "adgroup_id": 820033,
+                        "dynamic_creative_id": 730044,
+                        "adgroup_name": "腾讯首日付费组",
+                        "material_id": 550066,
+                        "cost": 15250,
+                        "view_count": 12000,
+                        "valid_click_count": 340,
+                        "conversions_count": 21,
+                        "deep_conversions_count": 9,
+                        "web_leads_count": 7,
+                        "cheout_pv_1d": 14,
+                        "cheout_fd": 98000,
+                        "praise_count": 18,
+                        "comment_count": 2,
+                        "video_play_count": 6400,
+                        "video_inner_play_count": 2100
+                    }],
+                    "page_info": { "page": 1, "page_size": 20, "total_number": 1, "total_page": 1 }
+                }
+            }),
+            &tc_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Creative,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        assert_eq!(tc_page.rows[0].entity_id, "730044");
+        assert_eq!(tc_page.rows[0].parent_entity_id.as_deref(), Some("910022"));
+        assert_eq!(tc_page.rows[0].content_id.as_deref(), Some("550066"));
+        assert_eq!(tc_page.rows[0].orders, 14);
+        assert_eq!(tc_page.rows[0].gmv_fen.as_fen(), 98000);
+        assert_eq!(tc_page.rows[0].leads, 7);
+
+        // 2. Ocean Engine v3.0: MATERIAL_DATA hourly string timestamp & numeric IDs & clue_cnt
+        let oe_acct = sample_account(PlatformId::OceanEngineAd);
+        let oe_page = OceanEngineConnector::parse_official_reports_response(
+            PlatformId::OceanEngineAd,
+            &serde_json::json!({
+                "code": 0,
+                "data": {
+                    "rows": [{
+                        "dimensions": {
+                            "stat_time_hour": "2026-11-10 14:00:00",
+                            "project_id": 180001,
+                            "material_id": 290002
+                        },
+                        "metrics": {
+                            "stat_cost": 88.50,
+                            "show_cnt": 9500,
+                            "click_cnt": 285,
+                            "convert_cnt": 15,
+                            "clue_cnt": 4,
+                            "pay_order_count": 11,
+                            "pay_order_amount": 1245.50,
+                            "total_play": 4200,
+                            "valid_play": 1800
+                        }
+                    }],
+                    "page_info": { "page": 1, "page_size": 20, "total_number": 1, "total_page": 1 }
+                }
+            }),
+            &oe_acct,
+            ReportGranularity::Hourly,
+            ReportLevel::Creative,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        assert_eq!(oe_page.rows[0].stat_hour, 14);
+        assert_eq!(oe_page.rows[0].gross_cost_fen.as_fen(), 8850);
+        assert_eq!(oe_page.rows[0].gmv_fen.as_fen(), 124550);
+        assert_eq!(oe_page.rows[0].parent_entity_id.as_deref(), Some("180001"));
+        assert_eq!(oe_page.rows[0].content_id.as_deref(), Some("290002"));
+        assert_eq!(oe_page.rows[0].leads, 4);
+
+        // 3. Kuaishou: aclick / form_count / event_pay / activation / total_count pagination without has_more key
+        let ks_acct = sample_account(PlatformId::Kuaishou);
+        let ks_page = KuaishouConnector::parse_official_reports_response(
+            &serde_json::json!({
+                "code": 0,
+                "data": {
+                    "total_count": 45,
+                    "details": [{
+                        "stat_date": "2026-11-10",
+                        "campaign_id": 33001,
+                        "unit_id": 44002,
+                        "unit_name": "快手单元A",
+                        "photo_id": 55003,
+                        "charge": 76.0,
+                        "show": 5000,
+                        "aclick": 190,
+                        "form_count": 6,
+                        "event_pay": 9,
+                        "event_pay_purchase_amount": 810.25,
+                        "activation": 15
+                    }]
+                }
+            }),
+            &ks_acct,
+            ReportGranularity::Daily,
+            ReportLevel::AdGroup,
+            TimeLine::ReportingTime,
+            1,
+            20,
+        )
+        .unwrap();
+        assert!(ks_page.has_more);
+        assert_eq!(ks_page.rows[0].gross_cost_fen.as_fen(), 7600);
+        assert_eq!(ks_page.rows[0].clicks, 190);
+        assert_eq!(ks_page.rows[0].leads, 6);
+        assert_eq!(ks_page.rows[0].orders, 9);
+        assert_eq!(ks_page.rows[0].conversions, 15);
+        assert_eq!(ks_page.rows[0].gmv_fen.as_fen(), 81025);
+        assert_eq!(ks_page.rows[0].entity_name, "快手单元A");
+
+        // 4. XHS Juguang: decimal string yuan "123.45" parsed cleanly + total_count pagination
+        let xhs_acct = sample_account(PlatformId::XhsJuguang);
+        let xhs_page = XhsAdsConnector::parse_official_reports_response(
+            PlatformId::XhsJuguang,
+            &serde_json::json!({
+                "code": 0,
+                "success": true,
+                "data": {
+                    "total_count": 50,
+                    "data_list": [{
+                        "time": "2026-11-10",
+                        "campaign_id": 77100,
+                        "unit_id": 77200,
+                        "unit_name": "聚光搜索词单元",
+                        "note_id": "671aabbccddeeff00112233",
+                        "fee": "123.45",
+                        "impression": 8800,
+                        "click": 410,
+                        "interaction": 95,
+                        "deal_order_num": 12,
+                        "deal_order_gmv": "1980.50"
+                    }]
+                }
+            }),
+            &xhs_acct,
+            ReportGranularity::Daily,
+            ReportLevel::AdGroup,
+            TimeLine::ReportingTime,
+            1,
+            20,
+            false,
+        )
+        .unwrap();
+        assert!(xhs_page.has_more);
+        assert_eq!(xhs_page.rows[0].gross_cost_fen.as_fen(), 12345);
+        assert_eq!(xhs_page.rows[0].gmv_fen.as_fen(), 198050);
+        assert_eq!(xhs_page.rows[0].parent_entity_id.as_deref(), Some("77100"));
+
+        // 5. Creation payload & unit conversion checks (Kuaishou li = fen * 10; Denghuo unsupported)
+        use adlink_domain::{AdCreationEntityKind, AdCreationRequest};
+        use adlink_engine::ConnectorError;
+        let ks_conn = KuaishouConnector::new(ConnectorMode::Mock);
+        let ks_create = ks_conn
+            .create_ad_entity(
+                &ks_acct,
+                &AdCreationRequest {
+                    platform: PlatformId::Kuaishou,
+                    ad_account_id: ks_acct.id.clone(),
+                    entity_kind: AdCreationEntityKind::Campaign,
+                    name: "Preview KS Campaign".into(),
+                    parent_entity_id: None,
+                    marketing_goal: None,
+                    daily_budget_fen: Some(50_000),
+                    bid_fen: None,
+                    targeting: serde_json::json!({}),
+                    creative_assets: serde_json::json!({}),
+                    landing_url: None,
+                    initial_status: "PAUSED".into(),
+                    dry_run: true,
+                    preview_confirmed: false,
+                    reason: "unit test preview".into(),
+                    operator: "test".into(),
+                    platform_extra: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ks_create.platform_payload_preview["day_budget"], 500_000);
+        assert_eq!(ks_create.platform_payload_preview["put_status"], 2);
+
+        let ali_conn = AlipayDenghuoConnector::new(ConnectorMode::Mock);
+        let ali_acct = sample_account(PlatformId::AlipayDenghuo);
+        let ali_create_err = ali_conn
+            .create_ad_entity(
+                &ali_acct,
+                &AdCreationRequest {
+                    platform: PlatformId::AlipayDenghuo,
+                    ad_account_id: ali_acct.id.clone(),
+                    entity_kind: AdCreationEntityKind::Campaign,
+                    name: "Unsupported".into(),
+                    parent_entity_id: None,
+                    marketing_goal: None,
+                    daily_budget_fen: Some(10_000),
+                    bid_fen: None,
+                    targeting: serde_json::json!({}),
+                    creative_assets: serde_json::json!({}),
+                    landing_url: None,
+                    initial_status: "PAUSED".into(),
+                    dry_run: true,
+                    preview_confirmed: false,
+                    reason: "test unsupported".into(),
+                    operator: "test".into(),
+                    platform_extra: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(ali_create_err, ConnectorError::InvalidRequest { .. }));
     }
 }

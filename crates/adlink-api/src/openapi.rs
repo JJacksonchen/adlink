@@ -18,7 +18,10 @@ pub fn openapi_spec() -> Value {
             "/api/v1/health": { "get": { "summary": "Kernel, DB, and connector health" } },
             "/api/v1/plugins": { "get": { "summary": "List mounted microkernel plugins, hooks, and services" } },
             "/api/v1/platforms": { "get": { "summary": "List supported platforms and official field mappings" } },
-            "/api/v1/platforms/{id}/onboard": { "get": { "summary": "Get official API onboarding steps for a platform" } },
+            "/api/v1/platforms/{id}/onboard": { "get": { "summary": "Get official API onboarding steps & opt-in ad-creation warning for a platform" } },
+            "/api/v1/platforms/{id}/discover-accounts": { "get": { "summary": "Discover authorized sub-accounts (Tier-1 Official MCP Auth Bridge -> Tier-2 Direct API fallback)" } },
+            "/api/v1/governance/relabel": { "post": { "summary": "Tier-1 optimal workflow: re-label 人-户关系 and 项目关系 on authenticated accounts" } },
+            "/api/v1/governance/fallback-bootstrap": { "post": { "summary": "Tier-2 fallback workflow: create custom project and link discovered sub-accounts" } },
             "/api/v1/accounts": { "get": { "summary": "List ad accounts" }, "post": { "summary": "Create/update ad account" } },
             "/api/v1/people": { "get": { "summary": "List organization people" }, "post": { "summary": "Create/update person" } },
             "/api/v1/bindings": { "get": { "summary": "List person-account bindings (人-户关系)" }, "post": { "summary": "Create/update person-account binding" } },
@@ -34,7 +37,9 @@ pub fn openapi_spec() -> Value {
             "/api/v1/ingest": { "post": { "summary": "Ingest external CSV/JSON records (e.g. Pugongying/Huahuo)" } },
             "/api/v1/ad-ops/campaigns": { "get": { "summary": "List cached/live campaigns & adgroups" } },
             "/api/v1/ad-ops/mutate": { "post": { "summary": "Execute guarded ad mutation (defaults dry_run=true)" } },
-            "/api/v1/audit-logs": { "get": { "summary": "List immutable mutation audit logs" } },
+            "/api/v1/ad-creation/status": { "get": { "summary": "Inspect opt-in Ad Creation (创编) status, ask prompt, risk warnings, and platform capabilities" } },
+            "/api/v1/ad-creation/create": { "post": { "summary": "Opt-in Ad Creation (disabled by default with 403 risk disclosure; requires enabled=true, risk_acknowledged=true, and dry_run=true preview)" } },
+            "/api/v1/audit-logs": { "get": { "summary": "List immutable mutation & creation audit logs" } },
             "/api/v1/ui/schema": { "get": { "summary": "Schema-driven UI descriptor for custom Web & MiniProgram frontends" } }
         }
     })

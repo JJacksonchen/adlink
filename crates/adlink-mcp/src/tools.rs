@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use adlink_domain::{
-    AccountType, AdAccount, AdMutationAction, AdMutationRequest, BindingRole, CaliberCategory,
-    CreativeAsset, CreativeFormat, CreativeHookType, CreativePlatformLink,
-    CreativeProductionContribution, CreativeTaxonomy, CustomCaliberDef, Fen, OrgType, Organization,
-    Person, PersonAccountBinding, PersonRole, PlatformId, ProductionRole, Project,
-    ProjectAccountLink, ProjectType, QueryDimension, ReportGranularity, ReportLevel, ReportQuery,
+    AccountType, AdAccount, AdCreationRequest, AdMutationAction, AdMutationRequest, BindingRole,
+    CaliberCategory, CreativeAsset, CreativeFormat, CreativeHookType, CreativePlatformLink,
+    CreativeProductionContribution, CreativeTaxonomy, CustomCaliberDef,
+    FallbackBootstrapProjectRequest, Fen, OrgType, Organization, Person, PersonAccountBinding,
+    PersonRole, PlatformId, ProductionRole, Project, ProjectAccountLink, ProjectType,
+    QueryDimension, RelabelAccountGovernanceRequest, ReportGranularity, ReportLevel, ReportQuery,
     SettlementMode, TimeLine, UnifiedReportRow,
 };
 use adlink_engine::{AdPlatformConnector, SyncCoordinator, SyncRequest};
@@ -20,7 +21,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::guardrail::execute_guarded_ad_mutation;
+use crate::auth_flows::{
+    discover_platform_accounts_enriched, fallback_bootstrap_project, relabel_account_governance,
+};
+use crate::guardrail::{
+    execute_guarded_ad_creation, execute_guarded_ad_mutation, get_ad_creation_disclosure,
+};
 use crate::protocol::{mcp_tool_err, mcp_tool_ok};
 
 #[derive(Clone)]
@@ -65,12 +71,62 @@ fn tool_catalog() -> Vec<ToolMeta> {
         ToolMeta {
             name: "adlink_onboard_guide",
             toolset: "onboarding",
-            description: "Return step-by-step instructions to guide the user through connecting a platform's official Marketing API (OAuth/RSA2 scopes, config TOML snippet, verification steps).",
+            description: "Return step-by-step instructions (Tier-1 Official MCP Auth Bridge + governance relabel vs Tier-2 Direct API fallback, plus mandatory default-off Ad Creation user prompt & risk disclosure).",
             input_schema: json!({
                 "type": "object",
                 "required": ["platform"],
                 "properties": {
                     "platform": { "type": "string", "description": "Platform id e.g. tencent_ads, xhs_juguang, alipay_denghuo, ocean_engine_ad" }
+                }
+            }),
+        },
+        ToolMeta {
+            name: "adlink_discover_platform_accounts",
+            toolset: "onboarding",
+            description: "Discover authorized advertiser/sub-accounts for a platform using Official MCP Bridge (optimal) or Direct Marketing API (fallback), enriched with current AdLink person/project governance bindings.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["platform"],
+                "properties": {
+                    "platform": { "type": "string", "description": "Platform id to inspect and list authorized accounts" }
+                }
+            }),
+        },
+        ToolMeta {
+            name: "adlink_relabel_account_governance",
+            toolset: "governance",
+            description: "Optimal Tier-1 workflow: reuse an account authenticated via Official Platform MCP Bridge (or API) and freely re-label (重标) its internal 人-户关系 (PersonAccountBinding) and 项目关系 (ProjectAccountLink).",
+            input_schema: json!({
+                "type": "object",
+                "required": ["platform", "platform_account_id"],
+                "properties": {
+                    "platform": { "type": "string" },
+                    "platform_account_id": { "type": "string" },
+                    "ad_account_id": { "type": "string" },
+                    "account_name": { "type": "string" },
+                    "auth_strategy": { "type": "string", "enum": ["official_mcp_bridge", "direct_api_account_discovery"] },
+                    "official_mcp_endpoint": { "type": "string" },
+                    "rebate_rate": { "type": "number" },
+                    "service_fee_rate": { "type": "number" },
+                    "default_cash_ratio": { "type": "number" },
+                    "replace_existing_bindings": { "type": "boolean", "default": false },
+                    "person_bindings": { "type": "array", "items": { "type": "object" } },
+                    "replace_existing_project_links": { "type": "boolean", "default": false },
+                    "project_links": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+        },
+        ToolMeta {
+            name: "adlink_fallback_bootstrap_project",
+            toolset: "governance",
+            description: "Fallback Tier-2 workflow: create/update a custom project and bind pulled sub-accounts (+ optional owner person bindings) in one step when Official MCP Auth Bridge is not used.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["project", "accounts"],
+                "properties": {
+                    "project": { "type": "object" },
+                    "accounts": { "type": "array", "items": { "type": "object" } },
+                    "replace_existing_links": { "type": "boolean", "default": false }
                 }
             }),
         },
@@ -295,6 +351,40 @@ fn tool_catalog() -> Vec<ToolMeta> {
             }),
         },
         ToolMeta {
+            name: "adlink_creation_status_and_risks",
+            toolset: "ops",
+            description: "Check whether opt-in Ad Creation (创编:新建计划/单元/创意) is enabled, retrieve the mandatory default user-confirmation prompt, 5 financial/policy risk warnings, and per-platform API support matrix.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolMeta {
+            name: "adlink_ad_create",
+            toolset: "ops",
+            description: "OPT-IN ONLY Ad Creation (创编): create campaign/ad_group/creative. Disabled by default (enabled=false) until the user explicitly consents & acknowledges risks; defaults to dry_run=true and initial_status=PAUSED.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["platform", "ad_account_id", "entity_kind", "name", "reason"],
+                "properties": {
+                    "platform": { "type": "string" },
+                    "ad_account_id": { "type": "string" },
+                    "entity_kind": { "type": "string", "enum": ["campaign", "ad_group", "creative"] },
+                    "name": { "type": "string" },
+                    "parent_entity_id": { "type": "string" },
+                    "marketing_goal": { "type": "string" },
+                    "daily_budget_fen": { "type": "integer" },
+                    "bid_fen": { "type": "integer" },
+                    "targeting": { "type": "object" },
+                    "creative_assets": { "type": "object" },
+                    "landing_url": { "type": "string" },
+                    "initial_status": { "type": "string", "default": "PAUSED" },
+                    "dry_run": { "type": "boolean", "default": true },
+                    "preview_confirmed": { "type": "boolean", "default": false },
+                    "reason": { "type": "string" },
+                    "operator": { "type": "string", "default": "mcp-agent" },
+                    "platform_extra": { "type": "object" }
+                }
+            }),
+        },
+        ToolMeta {
             name: "adlink_audit_logs",
             toolset: "ops",
             description: "Retrieve immutable audit log entries for ad mutations and guardrail rejections.",
@@ -345,7 +435,33 @@ async fn dispatch_inner(kernel: &Arc<Kernel>, name: &str, args: Value) -> Result
             let conn = kernel
                 .get_named_service::<dyn AdPlatformConnector>(p.as_str())
                 .ok_or_else(|| format!("connector '{}' is not mounted", p.as_str()))?;
-            Ok(serde_json::to_value(conn.onboard_guide()).map_err(|e| e.to_string())?)
+            let mut val = serde_json::to_value(conn.onboard_guide()).map_err(|e| e.to_string())?;
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert(
+                    "ad_creation_policy".into(),
+                    serde_json::to_value(get_ad_creation_disclosure(kernel))
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            Ok(val)
+        }
+        "adlink_discover_platform_accounts" => {
+            let p_str = args
+                .get("platform")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing required field 'platform'".to_string())?;
+            let p: PlatformId = p_str.parse().map_err(|e: adlink_domain::ParsePlatformError| e.to_string())?;
+            discover_platform_accounts_enriched(kernel, p).await
+        }
+        "adlink_relabel_account_governance" => {
+            let req: RelabelAccountGovernanceRequest =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            relabel_account_governance(kernel, "mcp", req).await
+        }
+        "adlink_fallback_bootstrap_project" => {
+            let req: FallbackBootstrapProjectRequest =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            fallback_bootstrap_project(kernel, "mcp", req).await
         }
         "adlink_connect_account" => {
             #[derive(Deserialize)]
@@ -665,6 +781,24 @@ async fn dispatch_inner(kernel: &Arc<Kernel>, name: &str, args: Value) -> Result
             let req: AdMutationRequest = serde_json::from_value(args).map_err(|e| e.to_string())?;
             let res = execute_guarded_ad_mutation(kernel, "mcp", req).await?;
             Ok(serde_json::to_value(res).map_err(|e| e.to_string())?)
+        }
+        "adlink_creation_status_and_risks" => {
+            serde_json::to_value(get_ad_creation_disclosure(kernel)).map_err(|e| e.to_string())
+        }
+        "adlink_ad_create" => {
+            let req: AdCreationRequest = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            match execute_guarded_ad_creation(kernel, "mcp", req).await {
+                Ok(res) => serde_json::to_value(res).map_err(|e| e.to_string()),
+                Err(err) => Err(serde_json::to_string_pretty(&json!({
+                    "code": err.code,
+                    "message": err.message,
+                    "is_opt_in_block": err.is_opt_in_block,
+                    "default_ask_user_prompt": err.disclosure.default_ask_user_prompt,
+                    "risk_warnings": err.disclosure.risk_warnings,
+                    "how_to_enable_toml": err.disclosure.how_to_enable_toml
+                }))
+                .unwrap_or_else(|_| err.to_string())),
+            }
         }
         "adlink_audit_logs" => {
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(30) as usize;

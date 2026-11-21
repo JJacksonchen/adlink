@@ -148,6 +148,18 @@ pub enum ApiAccessMode {
     HybridImportAndPartnerApi,
 }
 
+/// Ad Creation (`创编`) official API availability level for each platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdCreationSupport {
+    /// Publicly documented self-serve ad creation OpenAPI endpoints exist.
+    OfficialPublicApi,
+    /// Official Marketing API exists for creation, subject to commercial/partner whitelist approval.
+    OfficialPartnerApi,
+    /// No public self-serve ad creation OpenAPI is exposed; creation remains platform-portal-only.
+    NotSupportedPublicly,
+}
+
 /// Official field mapping entry documenting exact upstream naming and units.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfficialFieldMapping {
@@ -174,6 +186,8 @@ pub struct PlatformMeta {
     pub default_qps: f64,
     pub supports_ad_mutation: bool,
     pub supports_hourly_report: bool,
+    pub ad_creation_support: AdCreationSupport,
+    pub ad_creation_endpoints: Vec<&'static str>,
     pub official_endpoints: Vec<&'static str>,
     pub field_mappings: Vec<OfficialFieldMapping>,
     pub compliance_note: &'static str,
@@ -194,11 +208,17 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 5.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /v3.0/adgroups/add",
+                "POST /v3.0/dynamic_creatives/add",
+            ],
             official_endpoints: vec![
-                "GET /v3.0/daily_reports/get",
-                "GET /v3.0/hourly_reports/get",
+                "GET /v3.0/daily_reports/get (requires group_by)",
+                "GET /v3.0/hourly_reports/get (requires group_by)",
                 "GET /v3.0/funds/get",
                 "GET /v3.0/daily_balance_report/get",
+                "GET /v3.0/advertiser/get",
                 "GET /v3.0/adgroups/get",
                 "POST /v3.0/adgroups/update",
                 "POST /v3.0/async_tasks/add",
@@ -208,7 +228,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     canonical_field: "gross_cost_fen",
                     official_field: "cost",
                     official_unit: "fen",
-                    notes: "v3.0 new metric system (already in fen)",
+                    notes: "v3.0 metric in fen; requires matching level & group_by",
                 },
                 OfficialFieldMapping {
                     canonical_field: "impressions",
@@ -229,13 +249,19 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     notes: "Supports REPORTING_TIME and REQUEST_TIME time_line",
                 },
                 OfficialFieldMapping {
+                    canonical_field: "orders / gmv_fen / leads",
+                    official_field: "cheout_pv_1d / cheout_fd / web_leads_count",
+                    official_unit: "count / fen",
+                    notes: "First-day checkout & web leads metrics; availability varies by optimization goal",
+                },
+                OfficialFieldMapping {
                     canonical_field: "cash_cost_fen / grant_cost_fen",
                     official_field: "funds/get -> GENERAL_CASH / GENERAL_GIFT",
                     official_unit: "fen",
                     notes: "Reconciled via daily_balance_report/get",
                 },
             ],
-            compliance_note: "Official AMS v3.0 recommends syncing full D-1 daily reports after 08:00 CST.",
+            compliance_note: "AMS v3.0 uses 2-tier AdGroup+DynamicCreative structure; daily_reports/get requires group_by matching level (or aggregates account-wide).",
         },
         PlatformId::XhsJuguang => PlatformMeta {
             id,
@@ -245,11 +271,17 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             base_url: "https://adapi.xiaohongshu.com",
             docs_url: "https://open.xiaohongshu.com/",
             auth_scheme: "OAuth 2.0 (Header: Access-Token)",
-            monetary_unit: "fen (分) on balance / fen or yuan per whitepaper",
+            monetary_unit: "fen (分) on balance; fee supports integer fen or decimal yuan",
             max_sync_days_per_chunk: 30,
             default_qps: 4.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPartnerApi,
+            ad_creation_endpoints: vec![
+                "POST /api/open/jg/campaign/create",
+                "POST /api/open/jg/unit/create",
+                "POST /api/open/jg/creativity/create",
+            ],
             official_endpoints: vec![
                 "POST /api/open/jg/account/balance/info",
                 "POST /api/open/jg/data/report/offline/account",
@@ -262,8 +294,8 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                 OfficialFieldMapping {
                     canonical_field: "gross_cost_fen",
                     official_field: "fee",
-                    official_unit: "fen",
-                    notes: "Account balance & spend normalized to integer fen",
+                    official_unit: "fen (or decimal yuan auto-detected)",
+                    notes: "Normalized via json_money_fen + optional extra.report_money_unit",
                 },
                 OfficialFieldMapping {
                     canonical_field: "impressions",
@@ -290,7 +322,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     notes: "Joins paid Juguang traffic with Pugongying KOL seeding note",
                 },
             ],
-            compliance_note: "Requires advertiser/agency whitelist approval on XHS Open Platform.",
+            compliance_note: "Requires advertiser/agency whitelist approval on XHS Open Platform; manual-bid campaigns allow multi-unit, auto-bid allows single unit.",
         },
         PlatformId::XhsChengfeng => PlatformMeta {
             id,
@@ -300,11 +332,17 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             base_url: "https://adapi.xiaohongshu.com",
             docs_url: "https://open.xiaohongshu.com/",
             auth_scheme: "OAuth 2.0 (Header: Access-Token)",
-            monetary_unit: "fen (分)",
+            monetary_unit: "fen (分) on balance; decimal yuan auto-detected on report",
             max_sync_days_per_chunk: 30,
             default_qps: 4.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPartnerApi,
+            ad_creation_endpoints: vec![
+                "POST /api/open/jg/campaign/create",
+                "POST /api/open/jg/unit/create",
+                "POST /api/open/jg/creativity/create",
+            ],
             official_endpoints: vec![
                 "POST /api/open/jg/account/balance/info",
                 "POST /api/open/cf/data/report/offline/campaign",
@@ -315,7 +353,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                 OfficialFieldMapping {
                     canonical_field: "gross_cost_fen",
                     official_field: "fee",
-                    official_unit: "fen",
+                    official_unit: "fen / decimal yuan",
                     notes: "Shared XHS fund pool with Juguang",
                 },
                 OfficialFieldMapping {
@@ -327,7 +365,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                 OfficialFieldMapping {
                     canonical_field: "gmv_fen",
                     official_field: "deal_order_gmv",
-                    official_unit: "fen",
+                    official_unit: "fen / decimal yuan",
                     notes: "Chengfeng 7d/15d attributed GMV",
                 },
                 OfficialFieldMapping {
@@ -337,7 +375,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     notes: "Links SPU/note seeding creative to transaction GMV",
                 },
             ],
-            compliance_note: "Shares XHS underlying fund wallet; e-commerce GMV metrics require Chengfeng scopes.",
+            compliance_note: "Shares XHS underlying fund wallet; e-commerce GMV metrics & creation require Chengfeng partner scopes.",
         },
         PlatformId::XhsPugongying => PlatformMeta {
             id,
@@ -352,6 +390,8 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 2.0,
             supports_ad_mutation: false,
             supports_hourly_report: false,
+            ad_creation_support: AdCreationSupport::NotSupportedPublicly,
+            ad_creation_endpoints: vec![],
             official_endpoints: vec![
                 "Partner Whitelist Endpoint (configurable)",
                 "POST /api/v1/ingest (Structured PGY export / partner webhook)",
@@ -403,8 +443,14 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 4.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPartnerApi,
+            ad_creation_endpoints: vec![
+                "POST /takumi/api/campaign/create (partner contract)",
+                "POST /takumi/api/unit/create (partner contract)",
+                "POST /takumi/api/creative/create (partner contract)",
+            ],
             official_endpoints: vec![
-                "POST /takumi/api/report/query",
+                "POST /takumi/api/report/query (partner contract configurable)",
                 "GET /takumi/api/account/balance",
                 "POST /takumi/api/campaign/status",
             ],
@@ -413,7 +459,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     canonical_field: "gross_cost_fen",
                     official_field: "cost",
                     official_unit: "fen",
-                    notes: "Ad spend in fen",
+                    notes: "Ad spend in fen (partner contract field mapping)",
                 },
                 OfficialFieldMapping {
                     canonical_field: "impressions",
@@ -440,7 +486,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     notes: "Joins Qifei/Sanlian paid boost with Huahuo商单",
                 },
             ],
-            compliance_note: "Requires Bilibili commercial partner/agency whitelist authorization on cm.bilibili.com / openhome.bilibili.com.",
+            compliance_note: "Bilibili Sanlian MAPI schema is issued under partner NDA (supports optional X-Sanlian-Skills-Version & base_url_override).",
         },
         PlatformId::BilibiliHuahuo => PlatformMeta {
             id,
@@ -455,6 +501,8 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 2.0,
             supports_ad_mutation: false,
             supports_hourly_report: false,
+            ad_creation_support: AdCreationSupport::NotSupportedPublicly,
+            ad_creation_endpoints: vec![],
             official_endpoints: vec![
                 "Partner Whitelist Endpoint (configurable)",
                 "POST /api/v1/ingest (Structured Huahuo商单 settlement export)",
@@ -501,16 +549,23 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             base_url: "https://ad.e.kuaishou.com/rest/openapi",
             docs_url: "https://developers.e.kuaishou.com/",
             auth_scheme: "OAuth 2.0 (Header: Access-Token)",
-            monetary_unit: "yuan (元, float) -> converted to fen (分)",
+            monetary_unit: "yuan (元) in reports; li (厘, 1/1000 yuan) in creation",
             max_sync_days_per_chunk: 7,
             default_qps: 5.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /rest/openapi/v1/campaign/create",
+                "POST /rest/openapi/v2/ad_unit/create",
+                "POST /rest/openapi/v2/creative/create",
+            ],
             official_endpoints: vec![
                 "POST /rest/openapi/v1/report/account_report",
                 "POST /rest/openapi/v1/report/campaign_report",
                 "POST /rest/openapi/v1/report/unit_report",
                 "POST /rest/openapi/v1/report/creative_report",
+                "POST /rest/openapi/v1/agent/advertiser/list",
                 "POST /rest/openapi/v1/campaign/update/status",
             ],
             field_mappings: vec![
@@ -518,7 +573,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     canonical_field: "gross_cost_fen",
                     official_field: "charge",
                     official_unit: "yuan (converted *100 to fen)",
-                    notes: "Kuaishou real-time & offline charge",
+                    notes: "Kuaishou real-time & offline charge (Double yuan)",
                 },
                 OfficialFieldMapping {
                     canonical_field: "impressions",
@@ -528,18 +583,24 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                 },
                 OfficialFieldMapping {
                     canonical_field: "clicks",
-                    official_field: "photo_click",
+                    official_field: "photo_click / aclick",
                     official_unit: "count",
-                    notes: "Video/photo clicks",
+                    notes: "Photo click & action/material click",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "leads / orders / conversions",
+                    official_field: "form_count / submit / event_pay / activation",
+                    official_unit: "count",
+                    notes: "Supports both official short names and verbose aliases",
                 },
                 OfficialFieldMapping {
                     canonical_field: "gmv_fen",
                     official_field: "event_pay_purchase_amount",
                     official_unit: "yuan -> fen",
-                    notes: "Paid conversion amount",
+                    notes: "Paid conversion amount (pagination computed via total_count)",
                 },
             ],
-            compliance_note: "Official real-time report endpoints restrict span to 7 days; AdLink auto-chunks long date ranges.",
+            compliance_note: "Report `charge` is Yuan, while `campaign/create` & `ad_unit/create` budgets use `li` (厘 = 0.001 Yuan); real-time reports cap span at 7 days.",
         },
         PlatformId::OceanEngineAd => PlatformMeta {
             id,
@@ -554,11 +615,17 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 8.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /open_api/v3.0/project/create/",
+                "POST /open_api/v3.0/promotion/create/",
+            ],
             official_endpoints: vec![
-                "GET /open_api/v3.0/report/custom/get/",
+                "GET /open_api/v3.0/report/custom/get/ (BASIC_DATA | MATERIAL_DATA)",
                 "GET /open_api/v3.0/report/custom/get_acl/",
                 "GET /open_api/v3.0/project/list/",
                 "GET /open_api/v3.0/promotion/list/",
+                "GET /open_api/oauth2/advertiser/get/",
                 "GET /open_api/2/advertiser/fund/daily_stat/",
                 "POST /open_api/v3.0/promotion/status/update/",
             ],
@@ -567,34 +634,28 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     canonical_field: "gross_cost_fen",
                     official_field: "stat_cost",
                     official_unit: "yuan (converted *100 to fen)",
-                    notes: "Ocean Engine v3.0 custom report stat_cost",
+                    notes: "Ocean Engine v3.0 custom report; material_id uses data_topic=MATERIAL_DATA",
                 },
                 OfficialFieldMapping {
-                    canonical_field: "impressions",
-                    official_field: "show_cnt",
+                    canonical_field: "impressions / clicks",
+                    official_field: "show_cnt / click_cnt",
                     official_unit: "count",
-                    notes: "Impressions",
+                    notes: "Requests full metric list (convert_cnt, pay_order_count, dy_like, total_play, valid_play)",
                 },
                 OfficialFieldMapping {
-                    canonical_field: "clicks",
-                    official_field: "click_cnt",
-                    official_unit: "count",
-                    notes: "Clicks",
-                },
-                OfficialFieldMapping {
-                    canonical_field: "conversions",
-                    official_field: "convert_cnt",
-                    official_unit: "count",
-                    notes: "Conversions",
+                    canonical_field: "gmv_fen",
+                    official_field: "pay_order_amount",
+                    official_unit: "yuan -> fen",
+                    notes: "Converted payment GMV",
                 },
                 OfficialFieldMapping {
                     canonical_field: "cash_cost_fen / grant_cost_fen",
-                    official_field: "daily_stat -> cash_income / grant_income / shared_wallet_cost",
+                    official_field: "daily_stat -> cash_cost / grant_cost / shared_wallet_cost",
                     official_unit: "yuan -> fen",
-                    notes: "Daily fund reconciliation",
+                    notes: "Daily fund reconciliation with default_cash_ratio fallback",
                 },
             ],
-            compliance_note: "Uses Ocean Engine Marketing API v3.0 upgraded Project/Promotion hierarchy.",
+            compliance_note: "Uses Ocean Engine Marketing API v3.0 Project/Promotion hierarchy; material_id queries automatically switch data_topic=MATERIAL_DATA.",
         },
         PlatformId::OceanEngineLocal => PlatformMeta {
             id,
@@ -609,6 +670,11 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             default_qps: 6.0,
             supports_ad_mutation: true,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /open_api/v3.0/local/project/create/",
+                "POST /open_api/v3.0/local/promotion/create/",
+            ],
             official_endpoints: vec![
                 "GET /open_api/v3.0/local/report/project/get/",
                 "GET /open_api/v3.0/local/report/promotion/get/",
@@ -645,23 +711,25 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
             base_url: "https://openapi.alipay.com/gateway.do",
             docs_url: "https://open.alipay.com/",
             auth_scheme: "Alipay OpenAPI RSA2 (SHA256WithRSA) + biz_token + alipay_pid",
-            monetary_unit: "fen (分)",
+            monetary_unit: "fen (分) (plus cost_format in yuan)",
             max_sync_days_per_chunk: 7,
             default_qps: 5.0,
-            supports_ad_mutation: true,
+            supports_ad_mutation: false,
             supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::NotSupportedPublicly,
+            ad_creation_endpoints: vec![],
             official_endpoints: vec![
                 "alipay.data.dataservice.ad.reportdata.query",
-                "alipay.data.dataservice.ad.reportmetric.query",
+                "alipay.data.dataservice.ad.conversion.upload",
                 "alipay.data.dataservice.ad.consumehistory.query",
-                "alipay.data.dataservice.ad.principalconsume.query",
+                "alipay.data.dataservice.product.landinginfo.createormodify",
             ],
             field_mappings: vec![
                 OfficialFieldMapping {
                     canonical_field: "gross_cost_fen",
                     official_field: "data_list[].cost",
                     official_unit: "fen",
-                    notes: "Denghuo performance spend in fen",
+                    notes: "Denghuo performance spend in integer fen (`cost_format` is yuan string)",
                 },
                 OfficialFieldMapping {
                     canonical_field: "impressions",
@@ -676,13 +744,13 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                     notes: "Ad click count",
                 },
                 OfficialFieldMapping {
-                    canonical_field: "conversions",
-                    official_field: "data_list[].conv_result / conv_data_list",
+                    canonical_field: "conversions / leads / orders",
+                    official_field: "data_list[].conv_result / conversion_data_list[]",
                     official_unit: "count",
-                    notes: "Supports conv_code_list and conv_time_join_rule",
+                    notes: "Official response key is `conversion_data_list` (not returned on PRINCIPAL level); GMV requires revenue conversion codes via conv_code_list",
                 },
             ],
-            compliance_note: "Enforces max 7-day range for DETAIL and 1-day for HOUR; dates formatted yyyyMMdd; RSA2 signed.",
+            compliance_note: "Max 7-day range for DETAIL / 1-day for HOUR; dates yyyyMMdd; RSA2 signed; official OpenAPI does not publish self-serve campaign creation/status mutation endpoints.",
         },
     }
 }

@@ -9,8 +9,10 @@
 use std::sync::Arc;
 
 use adlink_domain::{
-    AdAccount, AdEntity, AdMutationAction, AdMutationRequest, AdMutationResult, DailyFundStatement,
-    Fen, PlatformId, ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
+    AccountType, AdAccount, AdCreationEntityKind, AdCreationRequest, AdCreationResult, AdEntity,
+    AdMutationAction, AdMutationRequest, AdMutationResult, AuthLoginStrategy, DailyFundStatement,
+    DiscoveredPlatformAccount, Fen, PlatformId, ReportGranularity, ReportLevel, TimeLine,
+    UnifiedReportRow,
 };
 use adlink_engine::{
     AdPlatformConnector, ConnectorError, ConnectorResult, PlatformOnboardGuide, ReportFetchPage,
@@ -21,9 +23,12 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use reqwest::Client;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::http_helpers::{
-    build_http_client, extract_raw_map, json_i64, json_str, json_u64, map_http_status, ConnectorMode,
+    build_http_client, discover_via_official_mcp_bridge, extract_raw_map, json_i64, json_money_fen,
+    json_opt_str, json_str, json_u64, map_http_status, merge_json_extra,
+    mock_discovered_accounts, platform_creation_notes, ConnectorMode,
 };
 use crate::mock_data::mock_entities_for_account;
 use crate::mock_generator::synthesize_chunk_metrics;
@@ -65,6 +70,9 @@ impl XhsAdsConnector {
         granularity: ReportGranularity,
         level: ReportLevel,
         time_line: TimeLine,
+        page: u32,
+        page_size: u32,
+        default_unit_yuan: bool,
     ) -> ConnectorResult<ReportFetchPage> {
         let success = payload
             .get("success")
@@ -112,7 +120,8 @@ impl XhsAdsConnector {
             } else {
                 ds
             };
-            let stat_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|e| {
+            let date_only = date_str.get(..10).unwrap_or(date_str.as_str());
+            let stat_date = NaiveDate::parse_from_str(date_only, "%Y-%m-%d").map_err(|e| {
                 ConnectorError::ParseError {
                     platform,
                     message: format!("invalid date '{date_str}': {e}"),
@@ -141,15 +150,23 @@ impl XhsAdsConnector {
                     if !u.is_empty() {
                         u
                     } else {
-                        account.account_name.clone()
+                        let c = json_str(&item, "campaign_name");
+                        if !c.is_empty() {
+                            c
+                        } else {
+                            account.account_name.clone()
+                        }
                     }
                 }
             };
 
-            // Juguang / Chengfeng `fee` & `deal_order_gmv` normalized to integer Fen.
-            let gross_fen = Fen::from_fen(json_i64(&item, "fee"));
+            // Juguang / Chengfeng `fee` & `deal_order_gmv` support both integer fen and decimal-string yuan.
+            let gross_fen = json_money_fen(&item, "fee", default_unit_yuan);
             let cash_fen = gross_fen.scale(account.default_cash_ratio);
-            let gmv_fen = Fen::from_fen(json_i64(&item, "deal_order_gmv"));
+            let gmv_fen = json_money_fen(&item, "deal_order_gmv", default_unit_yuan);
+            let leads = json_u64(&item, "leads")
+                .max(json_u64(&item, "clue_cnt"))
+                .max(json_u64(&item, "form_submit_cnt"));
 
             rows.push(UnifiedReportRow {
                 platform,
@@ -165,15 +182,18 @@ impl XhsAdsConnector {
                     entity_id
                 },
                 entity_name,
-                parent_entity_id: item.get("campaign_id").and_then(Value::as_str).map(str::to_string),
-                content_id: item.get("note_id").and_then(Value::as_str).map(str::to_string),
+                parent_entity_id: json_opt_str(&item, "campaign_id"),
+                content_id: json_opt_str(&item, "note_id"),
                 time_line,
                 gross_cost_fen: gross_fen,
                 cash_cost_fen: cash_fen,
                 grant_cost_fen: gross_fen - cash_fen,
                 impressions: json_u64(&item, "impression"),
                 clicks: json_u64(&item, "click"),
-                conversions: json_u64(&item, "convert_cnt").max(json_u64(&item, "deal_order_num")),
+                conversions: json_u64(&item, "convert_cnt")
+                    .max(json_u64(&item, "deal_order_num"))
+                    .max(leads),
+                leads,
                 orders: json_u64(&item, "deal_order_num"),
                 gmv_fen,
                 interactions: json_u64(&item, "interaction"),
@@ -184,10 +204,11 @@ impl XhsAdsConnector {
         }
 
         let total = data.get("total_count").and_then(Value::as_u64);
+        let fetched_through = u64::from(page.max(1)).saturating_mul(u64::from(page_size.max(1)));
         let has_more = data
             .get("has_more")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or_else(|| total.is_some_and(|t| fetched_through < t && !rows.is_empty()));
 
         Ok(ReportFetchPage {
             rows,
@@ -260,7 +281,88 @@ impl AdPlatformConnector for XhsAdsConnector {
         build_onboard_guide(self.platform, self.mode_label())
     }
 
+    async fn discover_accounts(&self) -> ConnectorResult<Vec<DiscoveredPlatformAccount>> {
+        match &self.mode {
+            ConnectorMode::Mock => Ok(mock_discovered_accounts(
+                self.platform,
+                AuthLoginStrategy::OfficialMcpBridge,
+            )),
+            ConnectorMode::Live(creds) => {
+                if let Some(bridged) =
+                    discover_via_official_mcp_bridge(&self.client, self.platform, creds).await
+                {
+                    return Ok(bridged);
+                }
+                let url = format!("{}/api/open/jg/account/list", self.base_url());
+                let resp = self
+                    .client
+                    .post(&url)
+                    .header("Access-Token", creds.access_token.as_str())
+                    .json(&json!({ "page_num": 1, "page_size": 100 }))
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::Transient {
+                        platform: self.platform,
+                        message: e.to_string(),
+                    })?;
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if !status.is_success() {
+                    return Err(map_http_status(self.platform, status, &text, None));
+                }
+                let val: Value =
+                    serde_json::from_str(&text).map_err(|e| ConnectorError::ParseError {
+                        platform: self.platform,
+                        message: e.to_string(),
+                    })?;
+                let list = val
+                    .get("data")
+                    .and_then(|d| d.get("account_list").or_else(|| d.get("list")))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(list
+                    .into_iter()
+                    .filter_map(|item| {
+                        let pid = json_str(&item, "advertiser_id");
+                        if pid.is_empty() {
+                            return None;
+                        }
+                        let name = {
+                            let n = json_str(&item, "advertiser_name");
+                            if n.is_empty() {
+                                format!("{} {pid}", self.platform.display_name_zh())
+                            } else {
+                                n
+                            }
+                        };
+                        Some(DiscoveredPlatformAccount {
+                            platform: self.platform,
+                            platform_account_id: pid,
+                            account_name: name,
+                            account_type: AccountType::AgencySub,
+                            status: "active".into(),
+                            parent_agent_id: json_opt_str(&item, "agent_id"),
+                            auth_strategy: AuthLoginStrategy::DirectApiAccountDiscovery,
+                            already_registered_ad_account_id: None,
+                            current_person_ids: Vec::new(),
+                            current_project_ids: Vec::new(),
+                            raw_extra: item,
+                        })
+                    })
+                    .collect())
+            }
+        }
+    }
+
     async fn fetch_reports_page(&self, req: &ReportFetchRequest) -> ConnectorResult<ReportFetchPage> {
+        let default_unit_yuan = match &self.mode {
+            ConnectorMode::Mock => false,
+            ConnectorMode::Live(creds) => creds
+                .extra
+                .get("report_money_unit")
+                .is_some_and(|u| u.eq_ignore_ascii_case("yuan")),
+        };
         let payload = match &self.mode {
             ConnectorMode::Mock => self.build_mock_official_payload(req),
             ConnectorMode::Live(creds) => {
@@ -314,6 +416,9 @@ impl AdPlatformConnector for XhsAdsConnector {
             req.granularity,
             req.level,
             req.time_line,
+            req.page,
+            req.page_size,
+            default_unit_yuan,
         )
     }
 
@@ -465,6 +570,157 @@ impl AdPlatformConnector for XhsAdsConnector {
                 summary: "XHS live status updated".into(),
                 guardrail_notes: vec![],
                 platform_response: serde_json::from_str(&text).unwrap_or(json!({"raw": text})),
+            });
+        }
+        unreachable!()
+    }
+
+    async fn create_ad_entity(
+        &self,
+        account: &AdAccount,
+        request: &AdCreationRequest,
+    ) -> ConnectorResult<AdCreationResult> {
+        let status_code = if request.initial_status.eq_ignore_ascii_case("PAUSED") {
+            2
+        } else {
+            1
+        };
+        let adv_id = account.platform_account_id.parse::<i64>().unwrap_or(0);
+        let (path, mut body) = match request.entity_kind {
+            AdCreationEntityKind::Campaign => {
+                let mut payload = json!({
+                    "advertiser_id": adv_id,
+                    "campaign_name": request.name,
+                    "marketing_target": request.marketing_goal.clone().unwrap_or_else(|| "NOTE_SEEDING".into()),
+                    "campaign_status": status_code,
+                });
+                if let Some(b_fen) = request.daily_budget_fen {
+                    payload["campaign_day_budget"] = json!(b_fen);
+                }
+                ("/api/open/jg/campaign/create", payload)
+            }
+            AdCreationEntityKind::AdGroup => {
+                let campaign_id = request.parent_entity_id.clone().ok_or_else(|| {
+                    ConnectorError::InvalidRequest {
+                        platform: self.platform,
+                        message: "creating XHS unit requires parent_entity_id (campaign_id)".into(),
+                    }
+                })?;
+                let mut payload = json!({
+                    "advertiser_id": adv_id,
+                    "campaign_id": campaign_id.parse::<i64>().map(Value::from).unwrap_or_else(|_| json!(campaign_id)),
+                    "unit_name": request.name,
+                    "status": status_code,
+                });
+                if let Some(bid_fen) = request.bid_fen {
+                    payload["event_bid"] = json!(bid_fen);
+                }
+                if !request.targeting.is_null() {
+                    payload["target_config"] = request.targeting.clone();
+                }
+                ("/api/open/jg/unit/create", payload)
+            }
+            AdCreationEntityKind::Creative => {
+                let unit_id = request.parent_entity_id.clone().ok_or_else(|| {
+                    ConnectorError::InvalidRequest {
+                        platform: self.platform,
+                        message: "creating XHS creativity requires parent_entity_id (unit_id)".into(),
+                    }
+                })?;
+                let payload = json!({
+                    "advertiser_id": adv_id,
+                    "unit_id": unit_id.parse::<i64>().map(Value::from).unwrap_or_else(|_| json!(unit_id)),
+                    "creativity_name": request.name,
+                    "creativity_config": request.creative_assets,
+                });
+                ("/api/open/jg/creativity/create", payload)
+            }
+        };
+        merge_json_extra(&mut body, &request.platform_extra);
+
+        let risk_warnings = platform_creation_notes(
+            self.platform,
+            Some("XHS Juguang/Chengfeng creation budgets & bids are in Fen (分) and require partner whitelist scopes."),
+        );
+        if request.dry_run || matches!(self.mode, ConnectorMode::Mock) {
+            let created_id = if request.dry_run {
+                None
+            } else {
+                Some(format!(
+                    "xhs_new_{}",
+                    &Uuid::new_v4().simple().to_string()[..8]
+                ))
+            };
+            return Ok(AdCreationResult {
+                dry_run: request.dry_run,
+                accepted: true,
+                platform: self.platform,
+                ad_account_id: account.id.clone(),
+                entity_kind: request.entity_kind,
+                created_entity_id: created_id.clone(),
+                initial_status: request.initial_status.clone(),
+                summary: format!(
+                    "XHS {:?} creation {} ({})",
+                    request.entity_kind,
+                    if request.dry_run { "previewed" } else { "created in mock" },
+                    self.mode_label()
+                ),
+                risk_warnings,
+                guardrail_notes: vec![format!("Target endpoint: POST {}{}", self.base_url(), path)],
+                platform_payload_preview: body,
+                platform_response: json!({
+                    "code": 0,
+                    "success": true,
+                    "mock": matches!(self.mode, ConnectorMode::Mock),
+                    "data": { "id": created_id }
+                }),
+            });
+        }
+
+        if let ConnectorMode::Live(creds) = &self.mode {
+            let url = format!("{}{}", self.base_url(), path);
+            let resp = self
+                .client
+                .post(&url)
+                .header("Access-Token", creds.access_token.as_str())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| ConnectorError::Transient {
+                    platform: self.platform,
+                    message: e.to_string(),
+                })?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return Err(map_http_status(self.platform, status, &text, None));
+            }
+            let val: Value = serde_json::from_str(&text).unwrap_or(json!({"raw": text}));
+            let code = val.get("code").and_then(Value::as_i64).unwrap_or(0);
+            if code != 0 && code != 200 {
+                return Err(ConnectorError::InvalidRequest {
+                    platform: self.platform,
+                    message: format!("XHS create error: {val}"),
+                });
+            }
+            let data = val.get("data").unwrap_or(&val);
+            let created_id = json_opt_str(data, "campaign_id")
+                .or_else(|| json_opt_str(data, "unit_id"))
+                .or_else(|| json_opt_str(data, "creativity_id"))
+                .or_else(|| json_opt_str(data, "id"));
+            return Ok(AdCreationResult {
+                dry_run: false,
+                accepted: true,
+                platform: self.platform,
+                ad_account_id: account.id.clone(),
+                entity_kind: request.entity_kind,
+                created_entity_id: created_id,
+                initial_status: request.initial_status.clone(),
+                summary: format!("XHS live {:?} created", request.entity_kind),
+                risk_warnings,
+                guardrail_notes: vec![],
+                platform_payload_preview: body,
+                platform_response: val,
             });
         }
         unreachable!()

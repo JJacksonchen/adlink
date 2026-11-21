@@ -29,7 +29,10 @@ async fn stress_test_180_day_ten_platform_concurrent_sync_and_attribution() {
         .unwrap();
     kernel
         .mount(
-            Arc::new(AdSafetyGuardrailPlugin::new(GuardrailConfig::default())),
+            Arc::new(AdSafetyGuardrailPlugin::new(
+                GuardrailConfig::default(),
+                adlink_domain::AdCreationConfig::default(),
+            )),
             Value::Null,
         )
         .await

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use adlink_connectors::{ConnectorMode, ConnectorSuiteConfig};
+use adlink_domain::AdCreationConfig;
 use adlink_mcp::GuardrailConfig;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,8 @@ pub struct AdLinkConfig {
     pub auth: AuthSection,
     #[serde(default)]
     pub guardrail: GuardrailConfig,
+    #[serde(default)]
+    pub ad_creation: AdCreationConfig,
     #[serde(default)]
     pub connectors: BTreeMap<String, ConnectorMode>,
 }

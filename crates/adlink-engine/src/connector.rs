@@ -1,8 +1,9 @@
 //! Platform connector trait contract, onboarding guide descriptor, and retryable error classification.
 
 use adlink_domain::{
-    AdAccount, AdEntity, AdMutationRequest, AdMutationResult, DailyFundStatement, PlatformId,
-    PlatformMeta, ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
+    AdAccount, AdCreationRequest, AdCreationResult, AdCreationSupport, AdEntity, AdMutationRequest,
+    AdMutationResult, DailyFundStatement, DiscoveredPlatformAccount, PlatformId, PlatformMeta,
+    ReportGranularity, ReportLevel, TimeLine, UnifiedReportRow,
 };
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -104,6 +105,11 @@ pub struct PlatformOnboardGuide {
     pub mode: String,
     pub developer_portal_url: String,
     pub oauth_or_auth_flow: String,
+    pub optimal_login_strategy: String,
+    pub fallback_login_strategy: String,
+    pub ad_creation_support: AdCreationSupport,
+    pub ad_creation_ask_prompt: String,
+    pub ad_creation_risks: Vec<String>,
     pub required_permissions: Vec<String>,
     pub prerequisite_steps: Vec<String>,
     pub credential_fields: Vec<CredentialFieldSpec>,
@@ -129,6 +135,12 @@ pub trait AdPlatformConnector: Send + Sync {
     /// Detailed official API connection walkthrough tailored for human operators & AI agents.
     fn onboard_guide(&self) -> PlatformOnboardGuide;
 
+    /// Discovers authorized advertiser/sub-accounts using Tier-1 Official MCP Bridge (optimal)
+    /// or Tier-2 Direct API Account List (fallback).
+    async fn discover_accounts(&self) -> ConnectorResult<Vec<DiscoveredPlatformAccount>> {
+        Ok(Vec::new())
+    }
+
     /// Fetches one page of normalized report rows (already parsed from official platform JSON).
     async fn fetch_reports_page(&self, req: &ReportFetchRequest) -> ConnectorResult<ReportFetchPage>;
 
@@ -153,4 +165,22 @@ pub trait AdPlatformConnector: Send + Sync {
         account: &AdAccount,
         request: &AdMutationRequest,
     ) -> ConnectorResult<AdMutationResult>;
+
+    /// Opt-in programmatic ad creation (`创编`: campaign / ad_group / creative).
+    /// Disabled by default by `AdSafetyGuardrailPlugin` until user consent + risk acknowledgment.
+    async fn create_ad_entity(
+        &self,
+        _account: &AdAccount,
+        request: &AdCreationRequest,
+    ) -> ConnectorResult<AdCreationResult> {
+        Err(ConnectorError::InvalidRequest {
+            platform: self.platform_id(),
+            message: format!(
+                "platform '{}' ({:?}) does not expose a public self-serve ad creation API for {:?}",
+                self.platform_id().display_name_zh(),
+                self.meta().ad_creation_support,
+                request.entity_kind
+            ),
+        })
+    }
 }
