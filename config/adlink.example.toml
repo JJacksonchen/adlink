@@ -5,9 +5,36 @@
 host = "0.0.0.0"
 port = 8787
 web_dir = "web-starter"
+max_in_flight_requests = 512
+request_timeout_secs = 30
+max_body_bytes = 16777216 # 16 MiB
+rate_limit_rps = 120
+rate_limit_burst = 240
+analytics_cache_ttl_secs = 30
+analytics_cache_max_entries = 1024
+idempotency_ttl_secs = 600
+job_queue_capacity = 128
+job_worker_concurrency = 4
+scheduled_sync_interval_secs = 0 # Set e.g. 1800 for 30-min automatic trailing sync
+# webhook_url = "https://ops-webhook.example.com/adlink-sync-events"
+# cors_allowed_origins = ["https://console.example.com"]
+log_format = "json"
+shutdown_drain_secs = 15
 
 [storage]
 db_path = "data/adlink.db"
+reader_pool_size = 8
+
+[fx_rates]
+# Base accounting currency is CNY (Fen = 0.01 CNY). Override daily FX spots if needed:
+USD = 7.25
+EUR = 7.85
+GBP = 9.15
+JPY = 0.048
+HKD = 0.93
+SGD = 5.40
+AUD = 4.75
+CAD = 5.25
 
 [auth]
 # Protect REST API + MCP HTTP endpoints with Bearer tokens or X-Api-Key
@@ -110,3 +137,49 @@ app_id = "${ALIPAY_APP_ID}"
 rsa2_private_key_pem = "${ALIPAY_RSA2_PRIVATE_KEY}"
 biz_token = "${ALIPAY_BIZ_TOKEN}"
 alipay_pid = "${ALIPAY_PID}"
+
+# ------------------------------------------------------------------
+# Overseas Platforms (Multi-Currency -> Canonical CNY Fen via [fx_rates])
+# ------------------------------------------------------------------
+
+# 11. TikTok For Business (Marketing API v1.3)
+[connectors.tiktok_ads]
+mode = "live"
+access_token = "${TIKTOK_ADS_ACCESS_TOKEN}"
+currency = "USD"
+
+# 12. Meta Ads / Facebook & Instagram (Graph Marketing API v21.0)
+# Note: Insights `spend` is major currency string; campaign/adset budgets convert automatically to cents!
+[connectors.meta_ads]
+mode = "live"
+access_token = "${META_ADS_ACCESS_TOKEN}"
+currency = "USD"
+
+# 13. Google Ads (API v18 GAQL `googleAds:searchStream` - costMicros -> Fen)
+[connectors.google_ads]
+mode = "live"
+access_token = "${GOOGLE_ADS_ACCESS_TOKEN}"
+developer_token = "${GOOGLE_ADS_DEVELOPER_TOKEN}"
+login_customer_id = "${GOOGLE_ADS_MCC_ID}"
+currency = "USD"
+
+# 14. Apple Search Ads (Campaign Management API v5 + Pure-Rust ES256 P-256 JWT)
+# Warning: ASA v5 is scheduled for sunset Jan 2027. Supply named_curve PKCS#8 ES256 private key PEM.
+[connectors.apple_search_ads]
+mode = "live"
+app_id = "${APPLE_ADS_CLIENT_ID}"
+team_id = "${APPLE_ADS_TEAM_ID}"
+key_id = "${APPLE_ADS_KEY_ID}"
+es256_private_key_pem = "${APPLE_ADS_ES256_KEY_PEM}"
+access_token = "${APPLE_ADS_ACCESS_TOKEN}"
+org_id = "${APPLE_ADS_ORG_ID}"
+currency = "USD"
+
+# 15. Amazon Ads (Reporting v3 Async + Sponsored Products /sp/* - max 31d/chunk)
+# Note: Amazon Reporting v3 has announced June 2027 migration to unified reporting.
+[connectors.amazon_ads]
+mode = "live"
+access_token = "${AMAZON_ADS_ACCESS_TOKEN}"
+app_id = "${AMAZON_ADS_CLIENT_ID}"
+amazon_profile_id = "${AMAZON_ADS_PROFILE_ID}"
+currency = "USD"

@@ -127,6 +127,22 @@ pub trait StorageService: Send + Sync {
 
     async fn count_report_rows(&self) -> StorageResult<usize>;
     async fn db_health_summary(&self) -> StorageResult<Value>;
+
+    /// Monotonically increasing epoch bumped after every committed write transaction,
+    /// allowing read caches in upper layers to invalidate in O(1) without polling SQLite.
+    fn write_epoch(&self) -> u64 {
+        0
+    }
+
+    /// Runs `PRAGMA wal_checkpoint(TRUNCATE)` on the writer connection during graceful shutdown.
+    async fn checkpoint_truncate(&self) -> StorageResult<()> {
+        Ok(())
+    }
+
+    /// Reports connection pool diagnostics (reader pool count, current write epoch).
+    fn pool_stats(&self) -> Value {
+        serde_json::json!({})
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +588,110 @@ mod tests {
             .find(|g| g.label.contains("Perf Project"))
             .unwrap();
         assert_eq!(perf_row.gross_media_cost_yuan, 2000.0);
+    }
+
+    #[tokio::test]
+    async fn sqlite_wal_reader_pool_handles_concurrent_readers_and_writer() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("pooled.db");
+        let storage = std::sync::Arc::new(SqliteStorage::open_with_pool(&db_path, 6).unwrap());
+        let initial_epoch = storage.write_epoch();
+        assert!(initial_epoch >= 1);
+
+        storage
+            .upsert_organization(&Organization {
+                id: "org-pool".into(),
+                name: "Pool Org".into(),
+                org_type: OrgType::Agency,
+                default_currency: "CNY".into(),
+            })
+            .await
+            .unwrap();
+        assert!(storage.write_epoch() > initial_epoch);
+
+        storage
+            .upsert_ad_account(&AdAccount {
+                id: "acc-pool".into(),
+                org_id: "org-pool".into(),
+                platform: PlatformId::MetaAds,
+                platform_account_id: "act_1".into(),
+                account_name: "Pool Meta".into(),
+                account_type: AccountType::AgencySub,
+                rebate_rate: 0.02,
+                service_fee_rate: 0.07,
+                default_cash_ratio: 1.0,
+                status: "active".into(),
+                credential_ref: None,
+                extra: Value::Null,
+            })
+            .await
+            .unwrap();
+
+        let d = NaiveDate::from_ymd_opt(2026, 11, 10).unwrap();
+        let writer_storage = std::sync::Arc::clone(&storage);
+        let writer_handle = tokio::spawn(async move {
+            for i in 0..5 {
+                let row = UnifiedReportRow {
+                    platform: PlatformId::MetaAds,
+                    ad_account_id: "acc-pool".into(),
+                    platform_account_id: "act_1".into(),
+                    stat_date: d,
+                    stat_hour: -1,
+                    granularity: ReportGranularity::Daily,
+                    level: ReportLevel::Campaign,
+                    entity_id: format!("c_{i}"),
+                    entity_name: format!("Camp {i}"),
+                    parent_entity_id: None,
+                    content_id: None,
+                    time_line: TimeLine::ReportingTime,
+                    gross_cost_fen: Fen(100_00),
+                    cash_cost_fen: Fen(100_00),
+                    grant_cost_fen: Fen::ZERO,
+                    kol_order_fee_fen: Fen::ZERO,
+                    platform_service_fee_fen: Fen::ZERO,
+                    impressions: 1000,
+                    clicks: 50,
+                    conversions: 5,
+                    deep_conversions: 0,
+                    leads: 0,
+                    orders: 5,
+                    gmv_fen: Fen(400_00),
+                    interactions: 10,
+                    video_plays: 100,
+                    effective_plays: 50,
+                    new_follows: 0,
+                    store_verifies: 0,
+                    raw_fields: Default::default(),
+                };
+                writer_storage.upsert_reports(&[row]).await.unwrap();
+            }
+        });
+
+        let mut reader_handles = Vec::new();
+        for _ in 0..16 {
+            let s = std::sync::Arc::clone(&storage);
+            reader_handles.push(tokio::spawn(async move {
+                let _ = s.list_ad_accounts(None).await.unwrap();
+                let _ = s
+                    .query_reconciled_metrics(&ReportQuery {
+                        start_date: d,
+                        end_date: d,
+                        group_by: vec![QueryDimension::Platform],
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let summary = s.db_health_summary().await.unwrap();
+                assert_eq!(summary["reader_pool_size"], 6);
+            }));
+        }
+
+        writer_handle.await.unwrap();
+        for h in reader_handles {
+            h.await.unwrap();
+        }
+        storage.checkpoint_truncate().await.unwrap();
+        let rows = storage.count_report_rows().await.unwrap();
+        assert_eq!(rows, 5);
     }
 }

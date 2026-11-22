@@ -12,9 +12,12 @@ pub fn openapi_spec() -> Value {
                 "name": "Apache-2.0",
                 "url": "https://www.apache.org/licenses/LICENSE-2.0"
             },
-            "description": "Headless REST & MCP API unifying 8 mainstream Chinese ad platforms (Tencent Ads v3.0, XHS Juguang/Chengfeng/Pugongying, Bilibili Sanlian/Huahuo, Kuaishou, Ocean Engine AD/Local, Alipay Denghuo) with person-account bindings, project classification, creative workload attribution, and spend/performance/custom calibers."
+            "description": "Headless REST & MCP API unifying 15 mainstream ad platforms (10 domestic CN + 5 global overseas: TikTok Ads, Meta Ads, Google Ads, Apple Search Ads, Amazon Ads) with ISO-4217 multi-currency FX conversion, person-account bindings, project classification, creative workload attribution, spend/performance/custom calibers, and commercial high-concurrency server guardrails."
         },
         "paths": {
+            "/healthz": { "get": { "summary": "Lightweight Kubernetes liveness probe" } },
+            "/readyz": { "get": { "summary": "Readiness probe checking SQLite WAL pool health and drain state (returns 503 when draining)" } },
+            "/metrics": { "get": { "summary": "Prometheus text exposition metrics (requests, latency histogram, cache hit/miss, queue depth, WAL write epoch)" } },
             "/api/v1/health": { "get": { "summary": "Kernel, DB, and connector health" } },
             "/api/v1/plugins": { "get": { "summary": "List mounted microkernel plugins, hooks, and services" } },
             "/api/v1/platforms": { "get": { "summary": "List supported platforms and official field mappings" } },
@@ -33,7 +36,9 @@ pub fn openapi_spec() -> Value {
             "/api/v1/attribution/creatives": { "post": { "summary": "Creative ROI, creator workload yield, and seeding+boost attribution" } },
             "/api/v1/sync/reports": { "post": { "summary": "Trigger high-concurrency batch report sync" } },
             "/api/v1/sync/funds": { "post": { "summary": "Sync daily cash vs grant wallet statements" } },
-            "/api/v1/sync/jobs": { "get": { "summary": "List recent sync jobs" } },
+            "/api/v1/sync/jobs": { "get": { "summary": "List recent sync jobs (persisted + queued)" } },
+            "/api/v1/sync/jobs/enqueue": { "post": { "summary": "Enqueue an asynchronous sync job (returns 202 Accepted; supports Idempotency-Key)" } },
+            "/api/v1/sync/jobs/{id}": { "get": { "summary": "Inspect status and result of an enqueued async sync job" } },
             "/api/v1/ingest": { "post": { "summary": "Ingest external CSV/JSON records (e.g. Pugongying/Huahuo)" } },
             "/api/v1/ad-ops/campaigns": { "get": { "summary": "List cached/live campaigns & adgroups" } },
             "/api/v1/ad-ops/mutate": { "post": { "summary": "Execute guarded ad mutation (defaults dry_run=true)" } },

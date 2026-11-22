@@ -90,7 +90,7 @@ impl McpHandler {
                             "name": "adlink-mcp",
                             "version": env!("CARGO_PKG_VERSION")
                         },
-                        "instructions": "AdLink connects 8 mainstream Chinese ad platforms (10 connectors) with enterprise governance (人-户关系, 项目分类, 创意归因, 消耗/业绩/自定义口径). Prefer Official MCP auth bridge + governance relabeling (`adlink_relabel_account_governance`), or fallback to `adlink_discover_platform_accounts` + `adlink_fallback_bootstrap_project`. Ad Creation (`创编`) is DISABLED by default: call `adlink_creation_status_and_risks`, ALWAYS ask the user before enabling it, and disclose creation risks."
+                        "instructions": "AdLink connects 15 mainstream domestic CN (10) & global overseas (5: TikTok, Meta, Google, Apple Search Ads, Amazon) ad platforms with multi-currency FX conversion and enterprise governance (人-户关系, 项目分类, 创意归因, 消耗/业绩/自定义口径). Prefer Official MCP auth bridge + governance relabeling (`adlink_relabel_account_governance`), or fallback to `adlink_discover_platform_accounts` + `adlink_fallback_bootstrap_project`. Ad Creation (`创编`) is DISABLED by default: call `adlink_creation_status_and_risks`, ALWAYS ask the user before enabling it, and disclose creation risks."
                     }),
                 )
             }
@@ -345,7 +345,7 @@ mod tests {
         let stateless_json: Value = serde_json::from_slice(&stateless_bytes).unwrap();
         assert_eq!(
             stateless_json["result"]["structuredContent"]["count"],
-            10
+            15
         );
 
         // 6. DELETE /mcp terminates the session and subsequent calls using that ID return 404.

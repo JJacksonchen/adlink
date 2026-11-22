@@ -139,3 +139,17 @@
 | `bilibili_sanlian` | 同上 (`official_mcp_bridge` + 重标) | `GET /takumi/api/account/list` + 建项目绑子户 | `official_partner_api` | 合作方 NDA 创编接口（支持 `base_url_override`） |
 | `alipay_denghuo` | 复用官方 MCP（若有）或 PID 登记 + 重标 | 配置 `app_id` + RSA2 私钥 + `biz_token` + `alipay_pid` | `not_supported_publicly` | 公开 OpenAPI 不提供自助计划/单元/创意创编及改价接口 |
 | `xhs_pugongying` / `bilibili_huahuo` | 白名单网关或结构化导入 + 重标项目 | 官方导表 `/api/v1/ingest` + `note_id`/`bvid` 关联 | `not_supported_publicly` | KOL 达人商单平台无公开自助创编 API |
+
+---
+
+## 四、海外主流媒体平台官方字段与多币种 FX 折算映射 (`GlobalOverseas`, 5 大平台)
+
+所有海外平台原始消费/转化价值均先按原币种解析，再依据 `FxRateTable`（`[fx_rates]` + 账户 `extra.currency` / `extra.fx_rate_to_base`，默认基准人民币 `CNY Fen = 0.01 CNY`，预设 `USD=7.25`、`EUR=7.85`、`GBP=9.15`、`JPY=0.048`）统一折算入库，同时在 `raw_fields` 无损注入 `original_currency`、`fx_rate_to_base` 与 `original_spend`。
+
+| 平台 ID | 官方 API 协议与版本 | 核心认证请求头 | 报表原始费用/转化官方字段 | 单位换算与官方陷阱说明 | 创编能力级别 (`ad_creation_support`) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `tiktok_ads` | TikTok Marketing API `v1.3` (`/open_api/v1.3/report/integrated/get/`) | `Access-Token` | `spend`, `impressions`, `clicks`, `complete_payment`, `total_complete_payment_value`, `value_per_complete_payment`, `currency` | 报表 `spend` 与创编预算均为**账户原币种主单位浮点/字符串**；AdLink 自动 `* fx_rate` 转人民币 `Fen`；单切片上限 30 天 | `official_public_api` |
+| `meta_ads` | Meta Graph API `v21.0` (`GET /v21.0/act_{id}/insights`) | `Authorization: Bearer` | `spend`（字符串）, `impressions`, `clicks`, `actions[]`, `action_values[]`, `account_currency` | **关键陷阱**：`/insights` 返回主币种小数，且优先取 `omni_purchase` 再回退 `purchase` 防止跨端重复计数；而 `/campaigns` / `/adsets` 创编改预算必须传入**最小货币整数分 (cents)** (`base_fen_to_currency_cents`)！ | `official_public_api` |
+| `google_ads` | Google Ads API `v18` (`POST /v18/customers/{id}/googleAds:searchStream` GAQL) | `Authorization: Bearer` + `developer-token` (+ MCC `login-customer-id`) | `metrics.costMicros`, `metrics.impressions`, `metrics.clicks`, `metrics.conversions`, `metrics.conversionsValue`, `customer.currencyCode` | **微单位换算**：`costMicros` 固定以 `1_000_000 micros = 1 原币种主单位`返回，创编同样以 `Micros` 写入；支持 MCC 一次性发现全量子户 | `official_public_api` |
+| `apple_search_ads` | Apple Ads Campaign Management API `v5` (`POST /api/v5/reports/campaigns`) | `Authorization: Bearer` + `X-AP-Context: orgId=...` | `localSpend { amount, currency }`, `impressions`, `taps`, `tapInstalls`, `granularity[].date` | 内置纯 Rust ES256 ECDSA P-256 JWT `client_secret` 签名器（需 `named_curve` PKCS#8 PEM）。⚠️ **v5 下线预告**：Apple 官方已计划于 **2027 年 1 月**下线 API v5，后续需平滑升级至 v6+ | `official_public_api` |
+| `amazon_ads` | Amazon Ads API `v3` (`POST /reporting/reports`, `GET /v2/profiles`, `/sp/*`) | `Authorization: Bearer` + `Amazon-Ads-ClientId` + `Amazon-Advertising-API-Scope` | `cost`, `impressions`, `clicks`, `purchases14d` (`7d`), `sales14d` (`7d`), `advertisedAsin`, `campaignBudgetCurrencyCode` | **异步报告与窗口限制**：Reporting v3 提交后若返回 `PENDING`/`PROCESSING`，连接器返回 `AsyncTaskPending` 供重试队列轮询，且单次最大 **31 天**。⚠️ **迁移预告**：Amazon 已公告 v3 Reporting 将于 **2027 年 6 月**迁移至统一接口 | `official_public_api` |

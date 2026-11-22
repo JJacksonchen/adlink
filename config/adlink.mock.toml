@@ -5,9 +5,30 @@
 host = "0.0.0.0"
 port = 8787
 web_dir = "web-starter"
+max_in_flight_requests = 512
+request_timeout_secs = 30
+max_body_bytes = 16777216
+rate_limit_rps = 120
+rate_limit_burst = 240
+analytics_cache_ttl_secs = 30
+analytics_cache_max_entries = 1024
+idempotency_ttl_secs = 600
+job_queue_capacity = 128
+job_worker_concurrency = 4
+scheduled_sync_interval_secs = 0
+log_format = "text"
+shutdown_drain_secs = 15
 
 [storage]
 db_path = "data/adlink-mock.db"
+reader_pool_size = 8
+
+[fx_rates]
+USD = 7.25
+EUR = 7.85
+GBP = 9.15
+JPY = 0.048
+HKD = 0.93
 
 [auth]
 # Leave empty in local development/mock mode to allow unauthenticated local testing.
@@ -56,4 +77,19 @@ mode = "mock"
 mode = "mock"
 
 [connectors.alipay_denghuo]
+mode = "mock"
+
+[connectors.tiktok_ads]
+mode = "mock"
+
+[connectors.meta_ads]
+mode = "mock"
+
+[connectors.google_ads]
+mode = "mock"
+
+[connectors.apple_search_ads]
+mode = "mock"
+
+[connectors.amazon_ads]
 mode = "mock"

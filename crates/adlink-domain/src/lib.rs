@@ -34,10 +34,10 @@ pub use governance::{
     AccountType, AdAccount, BindingRole, OrgType, Organization, Person, PersonAccountBinding,
     PersonRole, Project, ProjectAccountLink, ProjectType, SettlementMode,
 };
-pub use money::Fen;
+pub use money::{Fen, FxRateTable};
 pub use platform::{
     AdCreationSupport, ApiAccessMode, OfficialFieldMapping, ParsePlatformError, PlatformId,
-    PlatformMeta,
+    PlatformMeta, PlatformRegion,
 };
 pub use report::{
     DailyFundStatement, QueryDimension, ReportGranularity, ReportLevel, ReportQuery,
@@ -125,13 +125,20 @@ mod tests {
     }
 
     #[test]
-    fn all_ten_platforms_have_metadata_and_mappings() {
-        assert_eq!(PlatformId::ALL.len(), 10);
+    fn all_fifteen_platforms_have_metadata_and_mappings() {
+        assert_eq!(PlatformId::ALL.len(), 15);
         for p in PlatformId::ALL {
             let meta = p.meta();
             assert!(!meta.field_mappings.is_empty(), "{p} missing field mappings");
             assert!(meta.max_sync_days_per_chunk >= 1);
             assert!(meta.default_qps > 0.0);
+            let serialized = serde_json::to_string(p).unwrap();
+            assert_eq!(serialized, format!("\"{}\"", p.as_str()));
+            let deserialized: PlatformId = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(&deserialized, p);
         }
+        let fx = FxRateTable::default();
+        assert_eq!(fx.major_to_base_fen(10.0, "USD").as_fen(), 7250);
+        assert_eq!(fx.micros_to_base_fen(1_000_000, "USD").as_fen(), 725);
     }
 }

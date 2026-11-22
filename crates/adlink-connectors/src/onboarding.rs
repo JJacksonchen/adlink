@@ -278,6 +278,204 @@ alipay_pid = "2088612093847102""#.into(),
                 "官方 `reportdata.query` 明细数组字段为 `conversion_data_list`（`PRINCIPAL` / `MARKET_TARGET` 层级不返回该字段）；支付宝灯火开放平台目前未公开自助计划/单元/创意创编及状态修改 OpenAPI。".into(),
             ],
         },
+        PlatformId::TikTokAds => PlatformOnboardGuide {
+            platform,
+            mode: mode.into(),
+            developer_portal_url: "https://business-api.tiktok.com/portal/docs".into(),
+            oauth_or_auth_flow: "TikTok Marketing API v1.3 OAuth 2.0 (Access-Token header) / Official MCP Bridge".into(),
+            optimal_login_strategy,
+            fallback_login_strategy,
+            ad_creation_support: meta.ad_creation_support,
+            ad_creation_ask_prompt,
+            ad_creation_risks,
+            required_permissions: vec![
+                "Reporting: integrated report read (`open_api/v1.3/report/integrated/get/`)".into(),
+                "Account Management: advertiser info & oauth2 advertiser list".into(),
+                "Ad Management (可选，仅确认开启创编时): campaign/adgroup/ad create & status update".into(),
+            ],
+            prerequisite_steps: vec![
+                "1. 在 TikTok For Business Marketing API 开发者后台创建 App 并申请 Reporting 与 Advertiser Info 权限。".into(),
+                "2. 完成 OAuth 授权拿到长期 `access_token`，并记录目标 `advertiser_id`（可在账户 `extra.currency` 配置原币种如 USD，或用 `[fx_rates]` 统一折算为人民币分）。".into(),
+                "3. 若企业已有海外媒体官方 MCP 鉴权通道，优先配置 `auth_strategy = \"official_mcp_bridge\"` 与 `official_mcp_endpoint` 后调用 `adlink_relabel_account_governance` 重标内部人-户关系。".into(),
+            ],
+            credential_fields: vec![
+                spec("access_token", true, true, "TikTok Access-Token 请求头凭据", "env:TIKTOK_ADS_ACCESS_TOKEN"),
+                spec("app_id", false, false, "TikTok Marketing App ID", "738910293847123"),
+                spec("app_secret", false, true, "TikTok App Secret", "env:TIKTOK_ADS_APP_SECRET"),
+                spec("currency", false, false, "账户原币种 ISO-4217（默认 USD）", "USD"),
+            ],
+            toml_snippet: r#"[connectors.tiktok_ads]
+mode = "live"
+access_token = "${TIKTOK_ADS_ACCESS_TOKEN}"
+currency = "USD""#.into(),
+            verification_steps: vec![
+                "执行 `adlink sync --platforms tiktok_ads` 验证 `/report/integrated/get/` 返回的 `spend`、`complete_payment` 与 `total_complete_payment_value` 经 FX 折算后正确入库。".into(),
+            ],
+            gotchas: vec![
+                meta.compliance_note.into(),
+                "TikTok `/report/integrated/get/` `spend` 为账户原币种浮点主单位（如美元），AdLink 按 `fx_rate_to_base` 折算为人民币分并在 `raw_fields` 保留 `original_currency` 与 `original_spend`。".into(),
+            ],
+        },
+        PlatformId::MetaAds => PlatformOnboardGuide {
+            platform,
+            mode: mode.into(),
+            developer_portal_url: "https://developers.facebook.com/docs/marketing-apis/".into(),
+            oauth_or_auth_flow: "Meta Marketing API v21.0 System User Token / OAuth2 Bearer".into(),
+            optimal_login_strategy,
+            fallback_login_strategy,
+            ad_creation_support: meta.ad_creation_support,
+            ad_creation_ask_prompt,
+            ad_creation_risks,
+            required_permissions: vec![
+                "ads_read (`/v21.0/act_{ad_account_id}/insights` & `/me/adaccounts`)".into(),
+                "read_insights (投放洞察与 actions/action_values 归因明细)".into(),
+                "ads_management (可选，仅确认开启创编/改价后用于 /campaigns & /adsets 写入)".into(),
+            ],
+            prerequisite_steps: vec![
+                "1. 在 Meta Business Manager 创建 System User 并生成永久/长效访问令牌（含 `ads_read`，如需创编加 `ads_management`）。".into(),
+                "2. 记录广告账户 `act_{id}`（AdLink 会自动兼容带或不带 `act_` 前缀）。".into(),
+                "3. 在账户 `extra.currency` 与 `[fx_rates]` 核对结算币种汇率（默认 USD -> 7.25 CNY）。".into(),
+            ],
+            credential_fields: vec![
+                spec("access_token", true, true, "Meta System User / OAuth Access Token", "env:META_ADS_ACCESS_TOKEN"),
+                spec("app_id", false, false, "Meta App ID", "102938475610293"),
+                spec("app_secret", false, true, "Meta App Secret", "env:META_ADS_APP_SECRET"),
+                spec("currency", false, false, "账户结算币种 ISO-4217（默认 USD）", "USD"),
+            ],
+            toml_snippet: r#"[connectors.meta_ads]
+mode = "live"
+access_token = "${META_ADS_ACCESS_TOKEN}"
+currency = "USD""#.into(),
+            verification_steps: vec![
+                "执行 `adlink sync --platforms meta_ads` 验证 `spend`、`actions`（优先 `omni_purchase`）与 `action_values` 正确归一化，并测试创编预览将预算转为美分整数（cents）。".into(),
+            ],
+            gotchas: vec![
+                meta.compliance_note.into(),
+                "Meta Insights 返回 `spend` 为小数字符串（主币种元/美元），而 `/campaigns`、`/adsets` 写入 `daily_budget`/`bid_amount` 为最小货币单位整数（cents）！AdLink 已自动双向换算。".into(),
+            ],
+        },
+        PlatformId::GoogleAds => PlatformOnboardGuide {
+            platform,
+            mode: mode.into(),
+            developer_portal_url: "https://developers.google.com/google-ads/api/docs/start".into(),
+            oauth_or_auth_flow: "Google OAuth 2.0 Bearer + developer-token (+ optional login-customer-id MCC)".into(),
+            optimal_login_strategy,
+            fallback_login_strategy,
+            ad_creation_support: meta.ad_creation_support,
+            ad_creation_ask_prompt,
+            ad_creation_risks,
+            required_permissions: vec![
+                "https://www.googleapis.com/auth/adwords (Google Ads API v18 GAQL searchStream & listAccessibleCustomers)".into(),
+                "Google Ads Manager (MCC) `developer_token`（Basic/Standard Access）与可选 `login_customer_id`".into(),
+            ],
+            prerequisite_steps: vec![
+                "1. 通过 Google Ads MCC 账号申请并获批 `developer-token`（10 位 MCC 客户 ID 不带连字符）。".into(),
+                "2. 在 Google Cloud Console 创建 OAuth 2.0 凭据（scope `https://www.googleapis.com/auth/adwords`）获取 `access_token` 与 `refresh_token`。".into(),
+                "3. 若通过 MCC 代管多个子账户，配置 `login_customer_id` 后调用 `adlink_discover_platform_accounts` 一键拉取 `listAccessibleCustomers` 并完成内部人-户项目绑定。".into(),
+            ],
+            credential_fields: vec![
+                spec("access_token", true, true, "Google OAuth 2.0 Bearer Access Token", "env:GOOGLE_ADS_ACCESS_TOKEN"),
+                spec("refresh_token", false, true, "OAuth 2.0 Refresh Token", "env:GOOGLE_ADS_REFRESH_TOKEN"),
+                spec("developer_token", true, true, "Google Ads API Developer Token", "env:GOOGLE_ADS_DEVELOPER_TOKEN"),
+                spec("login_customer_id", false, false, "MCC 管理员账户 ID（不含横线）", "8891023456"),
+                spec("currency", false, false, "账户币种（默认 USD）", "USD"),
+            ],
+            toml_snippet: r#"[connectors.google_ads]
+mode = "live"
+access_token = "${GOOGLE_ADS_ACCESS_TOKEN}"
+developer_token = "${GOOGLE_ADS_DEVELOPER_TOKEN}"
+login_customer_id = "8891023456"
+currency = "USD""#.into(),
+            verification_steps: vec![
+                "执行 `adlink sync --platforms google_ads` 验证 GAQL `googleAds:searchStream` 返回的 `metrics.costMicros`（÷ 1,000,000 × FX）与 `conversionsValue` 精准入库。".into(),
+            ],
+            gotchas: vec![
+                meta.compliance_note.into(),
+                "Google Ads `costMicros` 固定以微单位（1,000,000 = 1 原币种单位）返回且创编预算也需传入 micros；AdLink 已自动完成 micros ⇄ 基准分（Fen）双向换算。".into(),
+            ],
+        },
+        PlatformId::AppleSearchAds => PlatformOnboardGuide {
+            platform,
+            mode: mode.into(),
+            developer_portal_url: "https://developer.apple.com/documentation/apple_ads".into(),
+            oauth_or_auth_flow: "Apple Ads API v5 OAuth2 Client Credentials + Pure-Rust ES256 JWT client_secret + X-AP-Context".into(),
+            optimal_login_strategy,
+            fallback_login_strategy,
+            ad_creation_support: meta.ad_creation_support,
+            ad_creation_ask_prompt,
+            ad_creation_risks,
+            required_permissions: vec![
+                "searchadsorg (`v5/reports/campaigns`, `/acls`, `/campaigns`, `/campaigns/{id}/adgroups`)".into(),
+                "Account Admin / API Account Manager 角色授权获取 orgId".into(),
+            ],
+            prerequisite_steps: vec![
+                "1. 在 Apple Search Ads Account Settings -> API 创建 API User，生成并下载 named_curve ECDSA P-256 PKCS#8 私钥 PEM（如 `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:named_curve`），并在后台上传对应公钥，获取 `client_id`（`app_id`）、`team_id`、`key_id`。".into(),
+                "2. AdLink 内置纯 Rust ES256 JWT 签发器（基于 `ring::signature::EcdsaKeyPair`），无需手写脚本生成 `client_secret`，也可直接传入预先签发的 `access_token`。".into(),
+                "3. 从 `/api/v5/acls` 或后台读取目标 `org_id`（用于 `X-AP-Context: orgId=...` 请求头）后即可拉取报表与账户结构。".into(),
+            ],
+            credential_fields: vec![
+                spec("app_id", true, false, "Apple Search Ads Client ID (支持别名 client_id, SEARCHADS....)", "SEARCHADS.77b29c10-aaaa-4bbb-cccc-1234567890ab"),
+                spec("team_id", false, false, "Apple Team ID / Client Secret iss", "SEARCHADS.77b29c10-aaaa-4bbb-cccc-1234567890ab"),
+                spec("key_id", false, false, "Public Key ID (`kid`)", "91a82bc1-3344-5566-7788-99aabbccddee"),
+                spec("es256_private_key_pem", false, true, "named_curve PKCS#8 ECDSA P-256 私钥 PEM（或直接传 access_token）", "env:APPLE_ADS_ES256_KEY_PEM"),
+                spec("access_token", false, true, "预先换取的 Bearer Access Token", "env:APPLE_ADS_ACCESS_TOKEN"),
+                spec("org_id", true, false, "Apple Search Ads Org ID (用于 X-AP-Context)", "4910283"),
+            ],
+            toml_snippet: r#"[connectors.apple_search_ads]
+mode = "live"
+app_id = "SEARCHADS.77b29c10-aaaa-4bbb-cccc-1234567890ab"
+team_id = "SEARCHADS.77b29c10-aaaa-4bbb-cccc-1234567890ab"
+key_id = "91a82bc1-3344-5566-7788-99aabbccddee"
+es256_private_key_pem = "${APPLE_ADS_ES256_KEY_PEM}"
+access_token = "${APPLE_ADS_ACCESS_TOKEN}"
+org_id = "4910283"
+currency = "USD""#.into(),
+            verification_steps: vec![
+                "验证 `sign_apple_es256_client_secret` 签名通过并用 ES256 客户端断言换取 OAuth token，执行 `adlink sync --platforms apple_search_ads` 检查 `localSpend.amount`、`taps`、`tapInstalls`。".into(),
+            ],
+            gotchas: vec![
+                meta.compliance_note.into(),
+                "注意：Apple Search Ads Campaign Management API v5 已公告计划于 2027 年 1 月下线，后续需平滑升级至 v6+；AdLink 已将端点版本与解析逻辑封装在独立 connector 中。".into(),
+            ],
+        },
+        PlatformId::AmazonAds => PlatformOnboardGuide {
+            platform,
+            mode: mode.into(),
+            developer_portal_url: "https://advertising.amazon.com/API/docs/en-us/".into(),
+            oauth_or_auth_flow: "Amazon Login with Amazon (LwA) OAuth 2.0 + Amazon-Ads-ClientId + Amazon-Advertising-API-Scope".into(),
+            optimal_login_strategy,
+            fallback_login_strategy,
+            ad_creation_support: meta.ad_creation_support,
+            ad_creation_ask_prompt,
+            ad_creation_risks,
+            required_permissions: vec![
+                "advertising::campaign_management (Profiles v2, Reporting API v3 POST/GET, Sponsored Products /sp/*)".into(),
+            ],
+            prerequisite_steps: vec![
+                "1. 注册 Amazon Ads API Developer Portal 并通过审核获得 `client_id`（`Amazon-Ads-ClientId`）与 `client_secret`。".into(),
+                "2. 完成 Login with Amazon (LwA) OAuth 授权，获取 `access_token` / `refresh_token`。".into(),
+                "3. 通过 `/v2/profiles`（`adlink_discover_platform_accounts` 自动调用）枚举各站点店铺 Profile ID 并按站点配置对应币种（如 US=USD, DE=EUR, UK=GBP, JP=JPY）。".into(),
+            ],
+            credential_fields: vec![
+                spec("access_token", true, true, "LwA OAuth2 Bearer Access Token", "env:AMAZON_ADS_ACCESS_TOKEN"),
+                spec("app_id", true, false, "Amazon-Ads-ClientId", "amzn1.application-oa2-client.9876543210"),
+                spec("amazon_profile_id", true, false, "Amazon-Advertising-API-Scope Profile ID", "3910294857123456"),
+                spec("currency", false, false, "站点 Profile 币种（如 USD/EUR/GBP/JPY）", "USD"),
+            ],
+            toml_snippet: r#"[connectors.amazon_ads]
+mode = "live"
+access_token = "${AMAZON_ADS_ACCESS_TOKEN}"
+app_id = "amzn1.application-oa2-client.9876543210"
+amazon_profile_id = "3910294857123456"
+currency = "USD""#.into(),
+            verification_steps: vec![
+                "执行 `adlink sync --platforms amazon_ads` 验证 `/reporting/reports` 异步任务提交/状态检查及 `cost`、`purchases14d`、`sales14d` 折算入库。".into(),
+            ],
+            gotchas: vec![
+                meta.compliance_note.into(),
+                "Amazon Ads Reporting v3 为异步报告且单次最大跨度 31 天（若返回 PENDING/PROCESSING，AdLink 会返回 `AsyncTaskPending` 供任务队列重试），v3 接口已公告将于 2027 年 6 月逐步迁移至统一 Reporting 接口。".into(),
+            ],
+        },
     }
 }
 

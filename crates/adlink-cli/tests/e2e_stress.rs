@@ -71,10 +71,10 @@ async fn stress_test_180_day_ten_platform_concurrent_sync_and_attribution() {
 
     assert_eq!(summary.status, "completed");
     assert_eq!(summary.failed_chunks, 0);
-    assert_eq!(summary.by_platform.len(), 10);
+    assert_eq!(summary.by_platform.len(), 15);
     assert!(
-        summary.rows_upserted >= 7_000,
-        "expected >= 7000 rows for 180d x 10 platforms x 4 levels, got {}",
+        summary.rows_upserted >= 10_000,
+        "expected >= 10000 rows for 180d x 15 platforms x 4 levels, got {}",
         summary.rows_upserted
     );
 
@@ -112,7 +112,13 @@ async fn stress_test_180_day_ten_platform_concurrent_sync_and_attribution() {
         })
         .await
         .unwrap();
-    assert_eq!(by_plat.len(), 10);
+    assert_eq!(by_plat.len(), 15);
+    for overseas in ["tiktok_ads", "meta_ads", "google_ads", "apple_search_ads", "amazon_ads"] {
+        assert!(
+            by_plat.iter().any(|g| g.label == overseas && g.gross_media_cost_yuan > 0.0),
+            "missing reconciled overseas platform {overseas}"
+        );
+    }
     assert!(total.gross_media_cost_yuan > 0.0);
     assert!(total.cash_cost_yuan > 0.0);
     assert!(total.full_funnel_cost_yuan > total.gross_media_cost_yuan);
@@ -137,7 +143,7 @@ async fn stress_test_180_day_ten_platform_concurrent_sync_and_attribution() {
         .query_creative_attribution(start, end, None, None, None)
         .await
         .unwrap();
-    assert_eq!(creatives.len(), 9);
+    assert_eq!(creatives.len(), 12);
     assert_eq!(creators.len(), 4);
     assert!(creators.iter().all(|c| c.gmv_per_work_hour_yuan > 0.0));
     assert!(seeding.iter().any(|s| s.content_id == "note_xhs_101" && s.boost_platform.is_some()));

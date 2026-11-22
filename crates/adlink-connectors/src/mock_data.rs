@@ -82,6 +82,11 @@ pub fn mock_account_id(platform: PlatformId) -> &'static str {
         PlatformId::OceanEngineAd => "acc-ocean-ad-01",
         PlatformId::OceanEngineLocal => "acc-ocean-local-01",
         PlatformId::AlipayDenghuo => "acc-alipay-dh-01",
+        PlatformId::TikTokAds => "acc-tiktok-01",
+        PlatformId::MetaAds => "acc-meta-01",
+        PlatformId::GoogleAds => "acc-google-01",
+        PlatformId::AppleSearchAds => "acc-asa-01",
+        PlatformId::AmazonAds => "acc-amazon-01",
     }
 }
 
@@ -97,6 +102,11 @@ pub fn mock_platform_account_id(platform: PlatformId) -> &'static str {
         PlatformId::OceanEngineAd => "178902341001",
         PlatformId::OceanEngineLocal => "178902341002",
         PlatformId::AlipayDenghuo => "2088612093847102",
+        PlatformId::TikTokAds => "7391028374619201",
+        PlatformId::MetaAds => "act_918273645019283",
+        PlatformId::GoogleAds => "7428910345",
+        PlatformId::AppleSearchAds => "4910283",
+        PlatformId::AmazonAds => "3910294857123456",
     }
 }
 
@@ -156,6 +166,31 @@ pub fn mock_entities_for_account(account: &AdAccount) -> Vec<AdEntity> {
             entity(p, &account.id, ReportLevel::Campaign, "dh_plan_01", "灯火_支付宝消费券小程序拉新", None, 140_000, 30_00, now, json!({})),
             entity(p, &account.id, ReportLevel::AdGroup, "dh_grp_01", "支付成功页+出行频道定向", Some("dh_plan_01"), 70_000, 30_00, now, json!({})),
             entity(p, &account.id, ReportLevel::Creative, "dh_cre_01", "支付立减5元权益卡片", Some("dh_grp_01"), 70_000, 30_00, now, json!({"material_id":"mat_dh_01"})),
+        ],
+        PlatformId::TikTokAds => vec![
+            entity(p, &account.id, ReportLevel::Campaign, "tt_camp_01", "TikTok_US_DTC_Serum_ABO", None, 362_500, 87_00, now, json!({"objective_type":"WEB_CONVERSIONS"})),
+            entity(p, &account.id, ReportLevel::AdGroup, "tt_adg_01", "US_Women_25_44_Skincare", Some("tt_camp_01"), 181_250, 87_00, now, json!({})),
+            entity(p, &account.id, ReportLevel::Creative, "tt_ad_01", "UGC_BeforeAfter_GlowSerum_EN", Some("tt_adg_01"), 181_250, 87_00, now, json!({"video_id":"v_tt_001"})),
+        ],
+        PlatformId::MetaAds => vec![
+            entity(p, &account.id, ReportLevel::Campaign, "fb_camp_01", "Meta_US_CBO_AdvantagePlus_DTC", None, 580_000, 108_75, now, json!({"objective":"OUTCOME_SALES"})),
+            entity(p, &account.id, ReportLevel::AdGroup, "fb_adset_01", "Broad_US_IG_Reels_Purchasers", Some("fb_camp_01"), 290_000, 108_75, now, json!({})),
+            entity(p, &account.id, ReportLevel::Creative, "fb_ad_01", "Reels_FounderStory_SerumBottle", Some("fb_adset_01"), 290_000, 108_75, now, json!({"creative_id":"mat_fb_01"})),
+        ],
+        PlatformId::GoogleAds => vec![
+            entity(p, &account.id, ReportLevel::Campaign, "gg_camp_01", "Google_PMax_US_Skincare_Store", None, 435_000, 72_50, now, json!({"advertising_channel_type":"PERFORMANCE_MAX"})),
+            entity(p, &account.id, ReportLevel::AdGroup, "gg_adg_01", "Search_Exact_Peptide_Serum", Some("gg_camp_01"), 217_500, 72_50, now, json!({})),
+            entity(p, &account.id, ReportLevel::Creative, "gg_ad_01", "YouTube_Shorts_ClinicTrial_30s", Some("gg_adg_01"), 217_500, 72_50, now, json!({"asset_id":"mat_gg_01"})),
+        ],
+        PlatformId::AppleSearchAds => vec![
+            entity(p, &account.id, ReportLevel::Campaign, "asa_camp_01", "ASA_US_Exact_BeautyApp_Brand", None, 217_500, 29_00, now, json!({})),
+            entity(p, &account.id, ReportLevel::AdGroup, "asa_adg_01", "US_iOS_CoreKeywords_Exact", Some("asa_camp_01"), 108_750, 29_00, now, json!({})),
+            entity(p, &account.id, ReportLevel::Creative, "asa_cre_01", "ASA_CustomProductPage_Trial", Some("asa_adg_01"), 108_750, 29_00, now, json!({"adam_id":"6471092831"})),
+        ],
+        PlatformId::AmazonAds => vec![
+            entity(p, &account.id, ReportLevel::Campaign, "amz_camp_01", "SP_US_Auto_HeroSerum_ASIN_B09X", None, 290_000, 50_75, now, json!({})),
+            entity(p, &account.id, ReportLevel::AdGroup, "amz_adg_01", "SP_Exact_VitaminC_Serum", Some("amz_camp_01"), 145_000, 50_75, now, json!({})),
+            entity(p, &account.id, ReportLevel::Creative, "amz_ad_01", "ASIN_B09XYZ1234_MainSKU", Some("amz_adg_01"), 145_000, 50_75, now, json!({"asin":"B09XYZ1234"})),
         ],
     }
 }
@@ -300,6 +335,16 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
             monthly_cost_fen: Fen(14_000_00),
             active: true,
         },
+        Person {
+            id: "per-opt-global".into(),
+            org_id: org.id.clone(),
+            name: "Alex Chen".into(),
+            email: Some("alex.chen@starpulse.example".into()),
+            department: "海外DTC增长组".into(),
+            role: PersonRole::Optimizer,
+            monthly_cost_fen: Fen(21_000_00),
+            active: true,
+        },
     ];
     for p in &people {
         storage.upsert_person(p).await?;
@@ -316,10 +361,19 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
         (PlatformId::OceanEngineAd, "巨量引擎AD_全店放量主户", 0.06, 0.07, 0.86),
         (PlatformId::OceanEngineLocal, "巨量本地推_华东门店户", 0.05, 0.08, 0.90),
         (PlatformId::AlipayDenghuo, "支付宝灯火_消费券拉新户", 0.05, 0.07, 0.91),
+        (PlatformId::TikTokAds, "TikTok Ads_US_DTC_Main", 0.03, 0.07, 1.00),
+        (PlatformId::MetaAds, "Meta Ads_Global_Reels_Primary", 0.02, 0.07, 1.00),
+        (PlatformId::GoogleAds, "Google Ads_US_Search_PMax", 0.02, 0.07, 1.00),
+        (PlatformId::AppleSearchAds, "Apple Search Ads_US_BeautyApp", 0.00, 0.08, 1.00),
+        (PlatformId::AmazonAds, "Amazon Ads_US_HeroSKU_SP", 0.00, 0.08, 1.00),
     ];
 
     let mut accounts = Vec::new();
     for (p, name, rebate, svc, cash_ratio) in account_specs {
+        let extra = match p.default_currency() {
+            "USD" => json!({ "mode": "mock", "currency": "USD", "fx_rate_to_base": 7.25 }),
+            cur => json!({ "mode": "mock", "currency": cur, "fx_rate_to_base": 1.0 }),
+        };
         let acct = AdAccount {
             id: mock_account_id(p).into(),
             org_id: org.id.clone(),
@@ -332,7 +386,7 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
             default_cash_ratio: cash_ratio,
             status: "active".into(),
             credential_ref: Some(p.as_str().into()),
-            extra: json!({ "mode": "mock" }),
+            extra,
         };
         storage.upsert_ad_account(&acct).await?;
         let ents = mock_entities_for_account(&acct);
@@ -452,12 +506,57 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
             effective_from: early,
             effective_to: None,
         },
+        PersonAccountBinding {
+            id: "bind-tt-global".into(),
+            person_id: "per-opt-global".into(),
+            ad_account_id: mock_account_id(PlatformId::TikTokAds).into(),
+            relation_role: BindingRole::PrimaryOptimizer,
+            split_weight: 1.0,
+            effective_from: early,
+            effective_to: None,
+        },
+        PersonAccountBinding {
+            id: "bind-fb-global".into(),
+            person_id: "per-opt-global".into(),
+            ad_account_id: mock_account_id(PlatformId::MetaAds).into(),
+            relation_role: BindingRole::PrimaryOptimizer,
+            split_weight: 1.0,
+            effective_from: early,
+            effective_to: None,
+        },
+        PersonAccountBinding {
+            id: "bind-gg-global".into(),
+            person_id: "per-opt-global".into(),
+            ad_account_id: mock_account_id(PlatformId::GoogleAds).into(),
+            relation_role: BindingRole::PrimaryOptimizer,
+            split_weight: 1.0,
+            effective_from: early,
+            effective_to: None,
+        },
+        PersonAccountBinding {
+            id: "bind-asa-global".into(),
+            person_id: "per-opt-global".into(),
+            ad_account_id: mock_account_id(PlatformId::AppleSearchAds).into(),
+            relation_role: BindingRole::PrimaryOptimizer,
+            split_weight: 1.0,
+            effective_from: early,
+            effective_to: None,
+        },
+        PersonAccountBinding {
+            id: "bind-amz-global".into(),
+            person_id: "per-opt-global".into(),
+            ad_account_id: mock_account_id(PlatformId::AmazonAds).into(),
+            relation_role: BindingRole::PrimaryOptimizer,
+            split_weight: 1.0,
+            effective_from: early,
+            effective_to: None,
+        },
     ];
     for b in &bindings {
         storage.upsert_person_account_binding(b).await?;
     }
 
-    // 5 Projects covering distinct `ProjectType` categories.
+    // 6 Projects covering domestic & overseas `ProjectType` categories.
     let projects = vec![
         Project {
             id: "prj-ecom-skincare".into(),
@@ -549,6 +648,24 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
             end_date: None,
             tags: vec!["支付宝灯火".into(), "小程序激活".into()],
         },
+        Project {
+            id: "prj-global-dtc".into(),
+            org_id: org.id.clone(),
+            code: "PRJ-GLOBAL-06".into(),
+            name: "GlowLab 欧美DTC全渠道出海增长".into(),
+            client_name: "润光生物科技".into(),
+            brand_name: "GlowLab Global".into(),
+            project_type: ProjectType::EcommerceGmv,
+            business_line: "海外DTC独立站+Amazon+App".into(),
+            settlement_mode: SettlementMode::MediaSpendPlusFee,
+            budget_fen: Fen(3_200_000_00),
+            target_roi: Some(3.1),
+            target_cpa_fen: Some(Fen(120_00)),
+            owner_person_id: Some("per-opt-global".into()),
+            start_date: early,
+            end_date: None,
+            tags: vec!["出海DTC".into(), "USD折算CNY".into(), "多平台归因".into()],
+        },
     ];
     for p in &projects {
         storage.upsert_project(p).await?;
@@ -565,6 +682,11 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
         ("pal-8", "prj-bili-3c", PlatformId::BilibiliHuahuo),
         ("pal-9", "prj-local-tea", PlatformId::OceanEngineLocal),
         ("pal-10", "prj-perf-fintech", PlatformId::AlipayDenghuo),
+        ("pal-11", "prj-global-dtc", PlatformId::TikTokAds),
+        ("pal-12", "prj-global-dtc", PlatformId::MetaAds),
+        ("pal-13", "prj-global-dtc", PlatformId::GoogleAds),
+        ("pal-14", "prj-global-dtc", PlatformId::AppleSearchAds),
+        ("pal-15", "prj-global-dtc", PlatformId::AmazonAds),
     ];
     for (id, pid, plat) in proj_links {
         storage
@@ -724,6 +846,54 @@ pub async fn seed_mock_governance(storage: &dyn StorageService) -> Result<(), St
             PlatformId::AlipayDenghuo,
             "dh_cre_01",
             Some("mat_dh_01"),
+        ),
+        (
+            "cr-tt-01",
+            "prj-global-dtc",
+            "CR-TT-01",
+            "TikTok US UGC Before/After Glow Serum 15s",
+            CreativeFormat::ShortVideo,
+            CreativeHookType::Contrast,
+            "Morning Vanity Bathroom",
+            "7-Day Radiance Clinical Boost",
+            "Authentic Creator UGC",
+            3200_00,
+            16.0,
+            PlatformId::TikTokAds,
+            "tt_ad_01",
+            Some("v_tt_001"),
+        ),
+        (
+            "cr-fb-01",
+            "prj-global-dtc",
+            "CR-FB-01",
+            "Meta Reels Founder Formulation Breakdown",
+            CreativeFormat::ShortVideo,
+            CreativeHookType::Story,
+            "Lab & Studio",
+            "10% Encapsulated Peptide Complex",
+            "Premium Editorial",
+            2900_00,
+            14.0,
+            PlatformId::MetaAds,
+            "fb_ad_01",
+            Some("mat_fb_01"),
+        ),
+        (
+            "cr-gg-01",
+            "prj-global-dtc",
+            "CR-GG-01",
+            "YouTube Shorts Clinical Peptide Trial 30s",
+            CreativeFormat::ShortVideo,
+            CreativeHookType::ExpertAuthority,
+            "Dermatology Lab",
+            "94% Smoother Skin in 28 Days",
+            "Science-First Authority",
+            2600_00,
+            12.0,
+            PlatformId::GoogleAds,
+            "gg_ad_01",
+            Some("mat_gg_01"),
         ),
     ];
 

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use adlink_api::{build_app_router, ApiAuthConfig};
+use adlink_api::{build_production_app, ApiAuthConfig, ProductionRuntime};
 use adlink_domain::{PlatformId, ReportGranularity, ReportLevel, TimeLine};
 use adlink_engine::{AdPlatformConnector, SyncCoordinator, SyncRequest};
 use adlink_mcp::{get_ad_creation_disclosure, run_stdio_server, McpHandler};
@@ -70,7 +70,7 @@ enum Commands {
         start: NaiveDate,
         #[arg(long)]
         end: NaiveDate,
-        /// Comma-separated platforms (defaults to all 10)
+        /// Comma-separated platforms (defaults to all 15)
         #[arg(long)]
         platforms: Option<String>,
         #[arg(long, default_value_t = 8)]
@@ -115,19 +115,52 @@ fn parse_toolsets(raw: Option<String>) -> Option<HashSet<String>> {
     })
 }
 
+async fn shutdown_signal(prod_runtime: Arc<ProductionRuntime>) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received: marking /readyz not-ready and draining connections");
+    prod_runtime.begin_drain();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let cfg = AdLinkConfig::load_or_default(cli.config.as_deref())?;
 
     // CRITICAL: In `mcp-stdio` mode, stdout carries JSON-RPC frames exclusively;
-    // force all tracing logs unconditionally to stderr.
+    // force all tracing logs (both text and json) unconditionally to stderr.
     let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-    tracing_subscriber::fmt()
-        .with_env_filter(log_filter)
-        .with_writer(std::io::stderr)
-        .init();
-
-    let cfg = AdLinkConfig::load_or_default(cli.config.as_deref())?;
+    if cfg.server.production.log_format.eq_ignore_ascii_case("json") {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(log_filter)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(log_filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     match cli.command {
         Commands::Serve {
@@ -154,11 +187,12 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&runtime.kernel),
                 parse_toolsets(toolsets),
             ));
-            let router = build_app_router(
+            let (router, prod_runtime) = build_production_app(
                 Arc::clone(&runtime.kernel),
                 mcp,
                 auth,
                 Some(web_root.clone()),
+                cfg.server.production.clone(),
             );
 
             let addr = format!("{bind_host}:{bind_port}");
@@ -166,9 +200,27 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(
                 listen = %addr,
                 web_dir = %web_root.display(),
-                "AdLink server ready (REST /api/v1/* | Streamable HTTP /mcp | Legacy SSE /sse)"
+                reader_pool_size = cfg.storage.reader_pool_size,
+                max_in_flight = cfg.server.production.max_in_flight_requests,
+                rate_limit_rps = cfg.server.production.rate_limit_rps,
+                fx_currencies = runtime.fx_rates.rates_to_cny.len(),
+                "AdLink commercial server ready (Probes /healthz /readyz /metrics | REST /api/v1/* | Streamable HTTP /mcp | Legacy SSE /sse)"
             );
-            axum::serve(listener, router).await?;
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal(Arc::clone(&prod_runtime)))
+                .await?;
+
+            let drain_secs = cfg.server.production.shutdown_drain_secs.max(1);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(drain_secs),
+                prod_runtime.shutdown(),
+            )
+            .await;
+            if let Err(e) = runtime.storage.checkpoint_truncate().await {
+                tracing::warn!(error = %e, "SQLite WAL checkpoint truncate on shutdown failed");
+            } else {
+                tracing::info!("AdLink workers drained and SQLite WAL checkpoint truncated");
+            }
         }
         Commands::McpStdio {
             seed_mock,
@@ -312,6 +364,7 @@ async fn main() -> anyhow::Result<()> {
                     "db_path": cfg.storage.db_path,
                     "storage": db,
                     "plugins_mounted": report.plugin_count,
+                    "fx_rates_to_cny": runtime.fx_rates.rates_to_cny,
                     "ad_creation": ad_creation,
                     "connectors": connectors
                 }))?

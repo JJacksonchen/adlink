@@ -9,11 +9,13 @@ Why AdLink even when ad platforms offer official MCPs: AdLink bridges raw single
 
 When helping a user operate or deploy **AdLink**:
 
-1. **Always check live state & creation policy first** with `adlink_health_check` and `adlink_creation_status_and_risks`.
-2. **Use the Two-Tier Login / Auth Strategy**:
+1. **Always check live state & creation policy first** with `adlink_health_check` (15 connectors: 10 CN domestic + 5 global overseas `tiktok_ads`, `meta_ads`, `google_ads`, `apple_search_ads`, `amazon_ads`) and `adlink_creation_status_and_risks`.
+2. **Use the Two-Tier Login / Auth Strategy & Overseas FX Setup**:
    - **Optimal (Tier 1)**: If the platform already provides an Official MCP authentication endpoint, reuse it (`auth_strategy = "official_mcp_bridge"`), call `adlink_discover_platform_accounts`, and call `adlink_relabel_account_governance` to freely re-label (`重标`) `人-户关系` and `项目归属` inside AdLink.
-   - **Fallback (Tier 2)**: If using headless Marketing API credentials, guide secret env vars inside `config/adlink.local.toml`, call `adlink_discover_platform_accounts` to fetch the authorized sub-account list, and call `adlink_fallback_bootstrap_project` to create a custom project and link selected sub-accounts + owners.
-   - **Compliance for `xhs_pugongying` & `bilibili_huahuo`**: Explain honestly that no open public self-serve MAPI exists; guide whitelisted gateway setup or `adlink_ingest_external_records` CSV/JSON import preserving `note_id` / `bvid`.
+   - **Fallback (Tier 2)**: If using headless Marketing API credentials, guide secret env vars inside `config/adlink.local.toml` (for overseas: `developer_token`/`login_customer_id` for Google Ads, `named_curve` P-256 PKCS#8 `es256_private_key_pem` + `org_id` for Apple Search Ads, `amazon_profile_id` for Amazon Ads, and `[fx_rates]` for USD/EUR/GBP/JPY conversion to base CNY Fen), call `adlink_discover_platform_accounts`, and call `adlink_fallback_bootstrap_project`.
+   - **Compliance for `xhs_pugongying` & `bilibili_huahuo`**: Explain honestly that no open public self-serve MAPI exists; guide whitelisted gateway setup or `adlink_ingest_external_records` CSV/JSON import preserving `note_id` / `bvid` (and `Idempotency-Key` on HTTP `/api/v1/ingest`).
+3. **High-Concurrency Operations & Observability**:
+   - Use `POST /api/v1/sync/jobs/enqueue` (`202 Accepted`) + `GET /api/v1/sync/jobs/{id}` for non-blocking background multi-platform syncs, and monitor `/readyz`, `/healthz`, `/metrics`.
 3. **MANDATORY Ad Creation (`创编`) Safety Protocol**:
    - `ad_creation.enabled` is **`false` by default**.
    - **ALWAYS ask the user** whether they want to opt into Ad Creation (`创编`) AND disclose all 5 financial/policy/unit-conversion risks returned by `adlink_creation_status_and_risks`.

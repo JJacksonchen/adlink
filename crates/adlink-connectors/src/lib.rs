@@ -1,15 +1,20 @@
-//! Connector plugins registry for all 8 Chinese ad platforms (10 logical connectors).
+//! Connector plugins registry for all 15 ad platforms (10 domestic CN + 5 global overseas).
 
 pub mod alipay_denghuo;
+pub mod amazon_ads;
+pub mod apple_search_ads;
 pub mod bilibili_huahuo;
 pub mod bilibili_sanlian;
+pub mod google_ads;
 pub mod http_helpers;
 pub mod kuaishou;
+pub mod meta_ads;
 pub mod mock_data;
 pub mod mock_generator;
 pub mod ocean_engine;
 pub mod onboarding;
 pub mod tencent_ads;
+pub mod tiktok_ads;
 pub mod xhs_juguang;
 pub mod xhs_pugongying;
 
@@ -24,14 +29,21 @@ use serde_json::Value;
 pub use alipay_denghuo::{
     build_alipay_sign_content, sign_alipay_rsa2, AlipayDenghuoConnector, AlipayDenghuoPlugin,
 };
+pub use amazon_ads::{AmazonAdsConnector, AmazonAdsPlugin};
+pub use apple_search_ads::{
+    sign_apple_es256_client_secret, AppleSearchAdsConnector, AppleSearchAdsPlugin,
+};
 pub use bilibili_huahuo::{BilibiliHuahuoConnector, BilibiliHuahuoPlugin};
 pub use bilibili_sanlian::{BilibiliSanlianConnector, BilibiliSanlianPlugin};
+pub use google_ads::{GoogleAdsConnector, GoogleAdsPlugin};
 pub use http_helpers::{ConnectorMode, LiveCredentials};
 pub use kuaishou::{KuaishouConnector, KuaishouPlugin};
+pub use meta_ads::{MetaAdsConnector, MetaAdsPlugin};
 pub use mock_data::{mock_account_id, mock_platform_account_id, seed_mock_governance};
 pub use ocean_engine::{OceanEngineConnector, OceanEnginePlugin};
 pub use onboarding::build_onboard_guide;
 pub use tencent_ads::{TencentAdsConnector, TencentAdsPlugin};
+pub use tiktok_ads::{TikTokAdsConnector, TikTokAdsPlugin};
 pub use xhs_juguang::{XhsAdsConnector, XhsPlugin};
 pub use xhs_pugongying::{XhsPugongyingConnector, XhsPugongyingPlugin};
 
@@ -79,6 +91,13 @@ pub async fn mount_all_connectors(
         Arc::new(AlipayDenghuoPlugin::new(
             suite.mode_for(PlatformId::AlipayDenghuo),
         )),
+        Arc::new(TikTokAdsPlugin::new(suite.mode_for(PlatformId::TikTokAds))),
+        Arc::new(MetaAdsPlugin::new(suite.mode_for(PlatformId::MetaAds))),
+        Arc::new(GoogleAdsPlugin::new(suite.mode_for(PlatformId::GoogleAds))),
+        Arc::new(AppleSearchAdsPlugin::new(
+            suite.mode_for(PlatformId::AppleSearchAds),
+        )),
+        Arc::new(AmazonAdsPlugin::new(suite.mode_for(PlatformId::AmazonAds))),
     ];
 
     for plugin in plugins {
@@ -609,5 +628,248 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(ali_create_err, ConnectorError::InvalidRequest { .. }));
+    }
+
+    #[tokio::test]
+    async fn overseas_platforms_parse_fx_units_and_es256_jwt_correctly() {
+        use adlink_domain::{AdCreationEntityKind, AdCreationRequest};
+        use adlink_engine::ConnectorError;
+
+        let fx_extra = serde_json::json!({
+            "currency": "USD",
+            "fx_rate_to_base": 7.25
+        });
+
+        let mut tt_acct = sample_account(PlatformId::TikTokAds);
+        tt_acct.extra = fx_extra.clone();
+        let tt_page = TikTokAdsConnector::parse_official_reports_response(
+            &serde_json::json!({
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "list": [{
+                        "dimensions": {
+                            "stat_time_day": "2026-11-10 00:00:00",
+                            "campaign_id": "180123",
+                            "ad_id": "980123"
+                        },
+                        "metrics": {
+                            "campaign_name": "TT US Serum",
+                            "ad_name": "UGC Ad 01",
+                            "spend": "100.00",
+                            "impressions": "15000",
+                            "clicks": "420",
+                            "complete_payment": "18",
+                            "total_complete_payment_value": "540.00",
+                            "currency": "USD"
+                        }
+                    }]
+                }
+            }),
+            &tt_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Creative,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        assert_eq!(tt_page.rows.len(), 1);
+        assert_eq!(tt_page.rows[0].gross_cost_fen.as_fen(), 72_500);
+        assert_eq!(tt_page.rows[0].gmv_fen.as_fen(), 391_500);
+        assert_eq!(tt_page.rows[0].orders, 18);
+
+        let mut meta_acct = sample_account(PlatformId::MetaAds);
+        meta_acct.extra = fx_extra.clone();
+        let meta_page = MetaAdsConnector::parse_official_reports_response(
+            &serde_json::json!({
+                "data": [{
+                    "date_start": "2026-11-10",
+                    "account_currency": "USD",
+                    "campaign_id": "fb_c1",
+                    "campaign_name": "Meta CBO",
+                    "ad_id": "fb_a1",
+                    "ad_name": "Reels 01",
+                    "spend": "20.00",
+                    "impressions": "9000",
+                    "clicks": "210",
+                    "actions": [
+                        { "action_type": "purchase", "value": "5" },
+                        { "action_type": "omni_purchase", "value": "7" },
+                        { "action_type": "post_engagement", "value": "88" }
+                    ],
+                    "action_values": [
+                        { "action_type": "purchase", "value": "150.00" },
+                        { "action_type": "omni_purchase", "value": "200.00" }
+                    ]
+                }]
+            }),
+            &meta_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Creative,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        // $20.00 * 7.25 = ¥145.00 = 14500 fen; omni_purchase $200 = ¥1450 = 145000 fen
+        assert_eq!(meta_page.rows[0].gross_cost_fen.as_fen(), 14_500);
+        assert_eq!(meta_page.rows[0].orders, 7);
+        assert_eq!(meta_page.rows[0].gmv_fen.as_fen(), 145_000);
+
+        // Meta creation preview must convert base CNY fen -> USD cents (¥725 = $100 = 10000 cents)
+        let meta_conn = MetaAdsConnector::new(ConnectorMode::Mock);
+        let meta_create = meta_conn
+            .create_ad_entity(
+                &meta_acct,
+                &AdCreationRequest {
+                    platform: PlatformId::MetaAds,
+                    ad_account_id: meta_acct.id.clone(),
+                    entity_kind: AdCreationEntityKind::Campaign,
+                    name: "Meta Preview".into(),
+                    parent_entity_id: None,
+                    marketing_goal: None,
+                    daily_budget_fen: Some(72_500),
+                    bid_fen: None,
+                    targeting: serde_json::json!({}),
+                    creative_assets: serde_json::json!({}),
+                    landing_url: None,
+                    initial_status: "PAUSED".into(),
+                    dry_run: true,
+                    preview_confirmed: false,
+                    reason: "unit test meta cents".into(),
+                    operator: "test".into(),
+                    platform_extra: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta_create.platform_payload_preview["daily_budget"], 10_000);
+
+        let mut gg_acct = sample_account(PlatformId::GoogleAds);
+        gg_acct.extra = fx_extra.clone();
+        let gg_page = GoogleAdsConnector::parse_official_reports_response(
+            &serde_json::json!([{
+                "results": [{
+                    "customer": { "id": "7428910345", "currencyCode": "USD" },
+                    "campaign": { "id": "21001", "name": "Google PMax" },
+                    "segments": { "date": "2026-11-10" },
+                    "metrics": {
+                        "costMicros": "10000000",
+                        "impressions": "12000",
+                        "clicks": "350",
+                        "conversions": 12.0,
+                        "conversionsValue": 400.0
+                    }
+                }]
+            }]),
+            &gg_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Campaign,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        // 10_000_000 micros = $10 * 7.25 = ¥72.50 = 7250 fen; $400 = ¥2900 = 290000 fen
+        assert_eq!(gg_page.rows[0].gross_cost_fen.as_fen(), 7_250);
+        assert_eq!(gg_page.rows[0].gmv_fen.as_fen(), 290_000);
+
+        let mut asa_acct = sample_account(PlatformId::AppleSearchAds);
+        asa_acct.extra = fx_extra.clone();
+        let asa_page = AppleSearchAdsConnector::parse_official_reports_response(
+            &serde_json::json!({
+                "data": {
+                    "reportingDataResponse": {
+                        "row": [{
+                            "metadata": { "campaignId": 991, "campaignName": "ASA Brand" },
+                            "granularity": [{
+                                "date": "2026-11-10",
+                                "localSpend": { "amount": "50.00", "currency": "USD" },
+                                "impressions": 4500,
+                                "taps": 225,
+                                "tapInstalls": 40
+                            }]
+                        }]
+                    }
+                }
+            }),
+            &asa_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Campaign,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        assert_eq!(asa_page.rows[0].gross_cost_fen.as_fen(), 36_250);
+        assert_eq!(asa_page.rows[0].clicks, 225);
+        assert_eq!(asa_page.rows[0].conversions, 40);
+
+        // Pure-Rust ES256 client_secret JWT signing via ECDSA P-256 (PKCS#8 named_curve).
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8_doc = ring::signature::EcdsaKeyPair::generate_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .unwrap();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            base64::engine::general_purpose::STANDARD.encode(pkcs8_doc.as_ref())
+        );
+        let jwt = sign_apple_es256_client_secret(
+            "SEARCHADS.client",
+            "SEARCHADS.team",
+            "key-123",
+            &pem,
+        )
+        .unwrap();
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let kp = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8_doc.as_ref(),
+            &rng,
+        )
+        .unwrap();
+        let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[2])
+            .unwrap();
+        let pub_key = UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_FIXED,
+            ring::signature::KeyPair::public_key(&kp).as_ref(),
+        );
+        pub_key
+            .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig)
+            .unwrap();
+
+        let mut amz_acct = sample_account(PlatformId::AmazonAds);
+        amz_acct.extra = fx_extra;
+        let pending_err = AmazonAdsConnector::parse_official_reports_response(
+            &serde_json::json!({ "status": "PENDING", "reportId": "rep-9988" }),
+            &amz_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Campaign,
+            TimeLine::ReportingTime,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            pending_err,
+            ConnectorError::AsyncTaskPending { ref task_id, .. } if task_id == "rep-9988"
+        ));
+
+        let amz_page = AmazonAdsConnector::parse_official_reports_response(
+            &serde_json::json!([{
+                "date": "2026-11-10",
+                "campaignId": "amz-c1",
+                "campaignName": "SP Hero",
+                "campaignBudgetCurrencyCode": "USD",
+                "cost": 40.0,
+                "impressions": 6000,
+                "clicks": 180,
+                "purchases14d": 15,
+                "sales14d": 280.0
+            }]),
+            &amz_acct,
+            ReportGranularity::Daily,
+            ReportLevel::Campaign,
+            TimeLine::ReportingTime,
+        )
+        .unwrap();
+        assert_eq!(amz_page.rows[0].gross_cost_fen.as_fen(), 29_000);
+        assert_eq!(amz_page.rows[0].gmv_fen.as_fen(), 203_000);
+        assert_eq!(amz_page.rows[0].orders, 15);
     }
 }

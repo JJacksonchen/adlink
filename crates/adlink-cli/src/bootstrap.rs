@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use adlink_connectors::{mount_all_connectors, seed_mock_governance};
-use adlink_domain::{PlatformId, ReportLevel};
+use adlink_domain::{FxRateTable, PlatformId, ReportLevel};
 use adlink_engine::{SyncCoordinator, SyncRequest};
 use adlink_kernel::Kernel;
 use adlink_mcp::AdSafetyGuardrailPlugin;
@@ -16,17 +16,25 @@ use crate::config::AdLinkConfig;
 pub struct BootstrappedRuntime {
     pub kernel: Arc<Kernel>,
     pub storage: Arc<SqliteStorage>,
+    pub fx_rates: Arc<FxRateTable>,
 }
 
-/// Boots the Cordis-inspired microkernel and mounts storage, safety guardrail, and all 10 connectors.
+/// Boots the Cordis-inspired microkernel and mounts storage WAL pool, FX table, safety guardrail, and all 15 connectors.
 pub async fn bootstrap_kernel(cfg: &AdLinkConfig) -> anyhow::Result<BootstrappedRuntime> {
-    let storage = Arc::new(SqliteStorage::open(&cfg.storage.db_path)?);
+    let storage = Arc::new(SqliteStorage::open_with_pool(
+        &cfg.storage.db_path,
+        cfg.storage.reader_pool_size,
+    )?);
+    let fx_rates = Arc::new(FxRateTable::with_overrides(cfg.fx_rates.clone()));
     let kernel = Arc::new(Kernel::new());
 
     kernel
         .mount(
             Arc::new(SqliteStoragePlugin::new(Arc::clone(&storage))),
-            serde_json::json!({ "db_path": cfg.storage.db_path }),
+            serde_json::json!({
+                "db_path": cfg.storage.db_path,
+                "reader_pool_size": cfg.storage.reader_pool_size
+            }),
         )
         .await?;
 
@@ -42,7 +50,11 @@ pub async fn bootstrap_kernel(cfg: &AdLinkConfig) -> anyhow::Result<Bootstrapped
 
     mount_all_connectors(&kernel, &cfg.connector_suite()).await?;
 
-    Ok(BootstrappedRuntime { kernel, storage })
+    Ok(BootstrappedRuntime {
+        kernel,
+        storage,
+        fx_rates,
+    })
 }
 
 /// Seeds realistic organization, `人-户关系`, `项目类型分类`, `创意类型分类` + workload credits,

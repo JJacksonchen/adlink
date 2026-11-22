@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adlink_domain::{
-    AccountType, AdCreationRiskDisclosure, AdCreationSupport, AuthLoginStrategy,
-    DiscoveredPlatformAccount, Fen, PlatformId,
+    AccountType, AdAccount, AdCreationRiskDisclosure, AdCreationSupport, AuthLoginStrategy,
+    DiscoveredPlatformAccount, Fen, FxRateTable, PlatformId,
 };
 use adlink_engine::ConnectorError;
 use reqwest::Client;
@@ -34,7 +34,7 @@ impl Default for ConnectorMode {
 /// Unified credential container serialized from `config/adlink.toml` or secret env references.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LiveCredentials {
-    #[serde(default)]
+    #[serde(default, alias = "client_id")]
     pub app_id: String,
     #[serde(default)]
     pub app_secret: String,
@@ -66,6 +66,32 @@ pub struct LiveCredentials {
     /// Bilibili commercial `X-Call-Source` header.
     #[serde(default)]
     pub call_source: String,
+    /// Google Ads API developer token (`developer-token` header).
+    #[serde(default)]
+    pub developer_token: String,
+    /// Google Ads optional MCC manager ID (`login-customer-id` header).
+    #[serde(default)]
+    pub login_customer_id: String,
+    /// Apple Search Ads organization ID (`X-AP-Context: orgId=...` header).
+    #[serde(default)]
+    pub org_id: String,
+    /// Amazon Ads profile ID (`Amazon-Advertising-API-Scope` header).
+    #[serde(default)]
+    pub amazon_profile_id: String,
+    /// Apple Search Ads ECDSA P-256 PKCS#8 private key PEM for ES256 client_secret JWT signing.
+    #[serde(default)]
+    pub es256_private_key_pem: String,
+    /// Apple Search Ads key ID (`kid`) and team ID (`iss` / `sub`).
+    #[serde(default)]
+    pub key_id: String,
+    #[serde(default)]
+    pub team_id: String,
+    /// Explicit reporting currency override (e.g. `USD`, `EUR`, `GBP`, `JPY`).
+    #[serde(default)]
+    pub currency: String,
+    /// Optional explicit exchange rate multiplier into base CNY.
+    #[serde(default)]
+    pub fx_rate_to_base: Option<f64>,
     /// Optional custom endpoint override (sandbox, proxy gateway, or whitelisted partner URL).
     #[serde(default)]
     pub base_url_override: Option<String>,
@@ -417,6 +443,62 @@ pub fn mock_discovered_accounts(
             raw_extra: json!({ "source": "mock_discovery", "primary": false }),
         },
     ]
+}
+
+/// Resolves `(iso_currency, fx_rate_to_base_cny)` for an overseas or multi-currency ad account.
+pub fn resolve_account_fx(account: &AdAccount, reported_currency: Option<&str>) -> (String, f64) {
+    let currency = reported_currency
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase)
+        .or_else(|| {
+            account
+                .extra
+                .get("currency")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_ascii_uppercase)
+        })
+        .unwrap_or_else(|| account.platform.default_currency().to_string());
+
+    let explicit_fx = account
+        .extra
+        .get("fx_rate_to_base")
+        .and_then(Value::as_f64)
+        .filter(|r| r.is_finite() && *r > 0.0);
+    let fx_rate = explicit_fx.unwrap_or_else(|| FxRateTable::default().rate_for(&currency));
+    (currency, fx_rate)
+}
+
+/// Stamps currency & FX audit metadata onto `raw_fields` for transparent financial tracing.
+pub fn stamp_currency_raw_fields(
+    raw: &mut BTreeMap<String, Value>,
+    currency: &str,
+    fx_rate: f64,
+    original_cost_major: f64,
+) {
+    raw.insert("_adlink_currency".into(), json!(currency));
+    raw.insert("_adlink_fx_rate_to_cny".into(), json!(fx_rate));
+    raw.insert("_adlink_original_cost_major".into(), json!(original_cost_major));
+}
+
+pub fn base_fen_to_currency_major(fen: i64, fx_rate: f64) -> f64 {
+    let rate = if fx_rate.is_finite() && fx_rate > 0.0 {
+        fx_rate
+    } else {
+        1.0
+    };
+    let raw = (fen as f64 / 100.0) / rate;
+    (raw * 100.0).round() / 100.0
+}
+
+pub fn base_fen_to_currency_cents(fen: i64, fx_rate: f64) -> i64 {
+    (base_fen_to_currency_major(fen, fx_rate) * 100.0).round() as i64
+}
+
+pub fn base_fen_to_currency_micros(fen: i64, fx_rate: f64) -> i64 {
+    (base_fen_to_currency_major(fen, fx_rate) * 1_000_000.0).round() as i64
 }
 
 trait StrFallback {

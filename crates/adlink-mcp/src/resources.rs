@@ -14,7 +14,7 @@ pub fn list_resources() -> Value {
             {
                 "uri": "adlink://catalog/platforms",
                 "name": "Supported Ad Platforms & Official Field Mappings",
-                "description": "Catalog of all 8 Chinese ad platforms (10 connectors), chunk windows, QPS limits, and official field mappings",
+                "description": "Catalog of all 15 domestic CN (10) & global overseas (5) ad platforms, default currencies, chunk windows, QPS limits, and official field mappings",
                 "mimeType": "application/json"
             },
             {

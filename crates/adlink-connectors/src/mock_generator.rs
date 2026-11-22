@@ -191,6 +191,11 @@ fn build_single_metric(
         PlatformId::BilibiliSanlian => 2200.0,
         PlatformId::OceanEngineLocal => 2500.0,
         PlatformId::AlipayDenghuo => 2400.0,
+        PlatformId::MetaAds => 5400.0,
+        PlatformId::GoogleAds => 5100.0,
+        PlatformId::TikTokAds => 4600.0,
+        PlatformId::AmazonAds => 3900.0,
+        PlatformId::AppleSearchAds => 2900.0,
         _ => 2000.0,
     };
 

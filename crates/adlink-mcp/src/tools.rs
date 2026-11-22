@@ -60,7 +60,7 @@ fn tool_catalog() -> Vec<ToolMeta> {
         ToolMeta {
             name: "adlink_platform_catalog",
             toolset: "onboarding",
-            description: "List all 8 supported ad platforms (10 connectors), official API base URLs, max chunk windows, rate limits, and official field mappings.",
+            description: "List all 15 supported ad platforms (10 domestic CN + 5 overseas: TikTok, Meta, Google, Apple Search Ads, Amazon), official API base URLs, default currencies, max chunk windows, rate limits, and official field mappings.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -153,7 +153,7 @@ fn tool_catalog() -> Vec<ToolMeta> {
         ToolMeta {
             name: "adlink_health_check",
             toolset: "system",
-            description: "Check health across the microkernel plugins, SQLite WAL storage row counts, and all 10 platform connectors.",
+            description: "Check health across the microkernel plugins, SQLite WAL storage row counts, and all 15 platform connectors.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolMeta {

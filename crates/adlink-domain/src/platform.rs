@@ -1,4 +1,4 @@
-//! Supported Chinese advertising platforms, official API metadata, and canonical field mappings.
+//! Supported domestic & global advertising platforms, official API metadata, and canonical field mappings.
 
 use std::fmt;
 use std::str::FromStr;
@@ -10,7 +10,15 @@ use thiserror::Error;
 #[error("unknown platform id '{0}'")]
 pub struct ParsePlatformError(pub String);
 
-/// Supported advertising & creator-marketing platforms.
+/// Geographic / billing region grouping for domestic CNY vs overseas multi-currency ad platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformRegion {
+    DomesticCn,
+    GlobalOverseas,
+}
+
+/// Supported advertising & creator-marketing platforms (10 domestic + 5 global overseas).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformId {
@@ -34,10 +42,21 @@ pub enum PlatformId {
     OceanEngineLocal,
     /// 支付宝灯火 (Alipay Denghuo Ad OpenAPI)
     AlipayDenghuo,
+    /// TikTok For Business (TikTok Marketing API v1.3)
+    #[serde(rename = "tiktok_ads")]
+    TikTokAds,
+    /// Meta Ads (Facebook / Instagram Marketing API v21.0)
+    MetaAds,
+    /// Google Ads (Search / YouTube / PMax API v18)
+    GoogleAds,
+    /// Apple Search Ads (Campaign Management API v5 + ES256)
+    AppleSearchAds,
+    /// Amazon Ads (Sponsored Products / Brands / Display v3)
+    AmazonAds,
 }
 
 impl PlatformId {
-    /// All 10 supported platform connectors in canonical display order.
+    /// All 15 supported platform connectors in canonical display order (10 domestic + 5 overseas).
     pub const ALL: &'static [Self] = &[
         Self::TencentAds,
         Self::XhsJuguang,
@@ -49,6 +68,11 @@ impl PlatformId {
         Self::OceanEngineAd,
         Self::OceanEngineLocal,
         Self::AlipayDenghuo,
+        Self::TikTokAds,
+        Self::MetaAds,
+        Self::GoogleAds,
+        Self::AppleSearchAds,
+        Self::AmazonAds,
     ];
 
     /// Canonical snake_case identifier used across APIs, DB keys, and MCP tools.
@@ -64,6 +88,11 @@ impl PlatformId {
             Self::OceanEngineAd => "ocean_engine_ad",
             Self::OceanEngineLocal => "ocean_engine_local",
             Self::AlipayDenghuo => "alipay_denghuo",
+            Self::TikTokAds => "tiktok_ads",
+            Self::MetaAds => "meta_ads",
+            Self::GoogleAds => "google_ads",
+            Self::AppleSearchAds => "apple_search_ads",
+            Self::AmazonAds => "amazon_ads",
         }
     }
 
@@ -80,6 +109,11 @@ impl PlatformId {
             Self::OceanEngineAd => "巨量引擎 AD",
             Self::OceanEngineLocal => "巨量本地推",
             Self::AlipayDenghuo => "支付宝灯火",
+            Self::TikTokAds => "TikTok Ads (海外商业化)",
+            Self::MetaAds => "Meta Ads (Facebook / Instagram)",
+            Self::GoogleAds => "Google Ads (v18 / YouTube / PMax)",
+            Self::AppleSearchAds => "Apple Search Ads (ASA v5)",
+            Self::AmazonAds => "Amazon Ads (Sponsored Ads v3)",
         }
     }
 
@@ -96,6 +130,31 @@ impl PlatformId {
             Self::OceanEngineAd => "Ocean Engine AD (v3.0)",
             Self::OceanEngineLocal => "Ocean Engine Local Ads (v3.0)",
             Self::AlipayDenghuo => "Alipay Denghuo",
+            Self::TikTokAds => "TikTok For Business (Marketing API v1.3)",
+            Self::MetaAds => "Meta Marketing API (Facebook/Instagram v21.0)",
+            Self::GoogleAds => "Google Ads API (v18 GAQL)",
+            Self::AppleSearchAds => "Apple Search Ads (Campaign Management v5)",
+            Self::AmazonAds => "Amazon Ads API (v3 Reporting & Campaigns)",
+        }
+    }
+
+    /// Indicates whether this connector operates in the domestic China ecosystem or overseas global ecosystem.
+    pub const fn region(&self) -> PlatformRegion {
+        match self {
+            Self::TikTokAds
+            | Self::MetaAds
+            | Self::GoogleAds
+            | Self::AppleSearchAds
+            | Self::AmazonAds => PlatformRegion::GlobalOverseas,
+            _ => PlatformRegion::DomesticCn,
+        }
+    }
+
+    /// Default settlement currency reported by this platform when account-level currency is omitted.
+    pub const fn default_currency(&self) -> &'static str {
+        match self.region() {
+            PlatformRegion::GlobalOverseas => "USD",
+            PlatformRegion::DomesticCn => "CNY",
         }
     }
 
@@ -131,6 +190,15 @@ impl FromStr for PlatformId {
                 Ok(Self::OceanEngineLocal)
             }
             "alipay_denghuo" | "denghuo" | "alipay" => Ok(Self::AlipayDenghuo),
+            "tiktok_ads" | "tiktok" | "tt" | "tt_ads" | "tiktok_for_business" => {
+                Ok(Self::TikTokAds)
+            }
+            "meta_ads" | "meta" | "facebook" | "fb" | "facebook_ads" | "instagram_ads" => {
+                Ok(Self::MetaAds)
+            }
+            "google_ads" | "google" | "gads" | "adwords" | "youtube_ads" => Ok(Self::GoogleAds),
+            "apple_search_ads" | "asa" | "apple" | "apple_ads" => Ok(Self::AppleSearchAds),
+            "amazon_ads" | "amazon" | "amzn" | "amzn_ads" => Ok(Self::AmazonAds),
             _ => Err(ParsePlatformError(s.to_string())),
         }
     }
@@ -173,6 +241,7 @@ pub struct OfficialFieldMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformMeta {
     pub id: PlatformId,
+    pub region: PlatformRegion,
     pub name_zh: &'static str,
     pub name_en: &'static str,
     pub access_mode: ApiAccessMode,
@@ -197,6 +266,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
     match id {
         PlatformId::TencentAds => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPublicApi,
@@ -265,6 +335,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::XhsJuguang => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPartnerApi,
@@ -326,6 +397,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::XhsChengfeng => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPartnerApi,
@@ -379,6 +451,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::XhsPugongying => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::HybridImportAndPartnerApi,
@@ -432,6 +505,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::BilibiliSanlian => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPartnerApi,
@@ -490,6 +564,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::BilibiliHuahuo => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::HybridImportAndPartnerApi,
@@ -543,6 +618,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::Kuaishou => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPublicApi,
@@ -604,6 +680,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::OceanEngineAd => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPublicApi,
@@ -659,6 +736,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::OceanEngineLocal => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPublicApi,
@@ -705,6 +783,7 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
         },
         PlatformId::AlipayDenghuo => PlatformMeta {
             id,
+            region: PlatformRegion::DomesticCn,
             name_zh: id.display_name_zh(),
             name_en: id.display_name_en(),
             access_mode: ApiAccessMode::OfficialPublicApi,
@@ -751,6 +830,237 @@ fn platform_meta(id: PlatformId) -> PlatformMeta {
                 },
             ],
             compliance_note: "Max 7-day range for DETAIL / 1-day for HOUR; dates yyyyMMdd; RSA2 signed; official OpenAPI does not publish self-serve campaign creation/status mutation endpoints.",
+        },
+        PlatformId::TikTokAds => PlatformMeta {
+            id,
+            region: PlatformRegion::GlobalOverseas,
+            name_zh: id.display_name_zh(),
+            name_en: id.display_name_en(),
+            access_mode: ApiAccessMode::OfficialPublicApi,
+            base_url: "https://business-api.tiktok.com/open_api/v1.3",
+            docs_url: "https://business-api.tiktok.com/portal/docs",
+            auth_scheme: "OAuth 2.0 (Header: Access-Token)",
+            monetary_unit: "account currency major float (FX -> base CNY fen)",
+            max_sync_days_per_chunk: 30,
+            default_qps: 8.0,
+            supports_ad_mutation: true,
+            supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /open_api/v1.3/campaign/create/",
+                "POST /open_api/v1.3/adgroup/create/",
+                "POST /open_api/v1.3/ad/create/",
+            ],
+            official_endpoints: vec![
+                "GET /open_api/v1.3/report/integrated/get/",
+                "GET /open_api/v1.3/oauth2/advertiser/get/",
+                "POST /open_api/v1.3/campaign/status/update/",
+                "POST /open_api/v1.3/adgroup/status/update/",
+            ],
+            field_mappings: vec![
+                OfficialFieldMapping {
+                    canonical_field: "gross_cost_fen",
+                    official_field: "metrics.spend",
+                    official_unit: "account currency major -> FX base fen",
+                    notes: "Converted cleanly via FX table & stamped into raw_fields",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "impressions / clicks",
+                    official_field: "metrics.impressions / metrics.clicks",
+                    official_unit: "count",
+                    notes: "Integrated BASIC report metrics",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "conversions / orders / gmv_fen",
+                    official_field: "conversion / complete_payment / value_per_complete_payment",
+                    official_unit: "count / account currency",
+                    notes: "GMV = total_complete_payment_value or complete_payment * value_per_complete_payment",
+                },
+            ],
+            compliance_note: "Standard TikTok Marketing API v1.3 BASIC integrated reporting; Smart+ campaigns may impose simplified campaign hierarchy rules.",
+        },
+        PlatformId::MetaAds => PlatformMeta {
+            id,
+            region: PlatformRegion::GlobalOverseas,
+            name_zh: id.display_name_zh(),
+            name_en: id.display_name_en(),
+            access_mode: ApiAccessMode::OfficialPublicApi,
+            base_url: "https://graph.facebook.com/v21.0",
+            docs_url: "https://developers.facebook.com/docs/marketing-api/insights",
+            auth_scheme: "OAuth 2.0 (Bearer access_token + App Secret)",
+            monetary_unit: "spend major decimal string in insights; daily_budget integer minor cents in creation",
+            max_sync_days_per_chunk: 30,
+            default_qps: 5.0,
+            supports_ad_mutation: true,
+            supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /v21.0/act_{ad_account_id}/campaigns",
+                "POST /v21.0/act_{ad_account_id}/adsets",
+                "POST /v21.0/act_{ad_account_id}/ads",
+            ],
+            official_endpoints: vec![
+                "GET /v21.0/act_{ad_account_id}/insights",
+                "GET /v21.0/me/adaccounts",
+                "POST /v21.0/{entity_id}",
+            ],
+            field_mappings: vec![
+                OfficialFieldMapping {
+                    canonical_field: "gross_cost_fen",
+                    official_field: "spend",
+                    official_unit: "account_currency major decimal -> FX base fen",
+                    notes: "Insights `spend` is major decimal string, whereas creation `daily_budget` uses integer cents",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "orders / gmv_fen / leads",
+                    official_field: "actions[] / action_values[] (omni_purchase / purchase / lead)",
+                    official_unit: "count / account_currency major",
+                    notes: "Prioritizes `omni_purchase` over legacy `purchase` to prevent double counting",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "impressions / clicks",
+                    official_field: "impressions / clicks",
+                    official_unit: "count",
+                    notes: "Supports cursor pagination via `paging.cursors.after`",
+                },
+            ],
+            compliance_note: "Meta Graph API v21.0 uses major currency in Insights and minor integer cents on Campaign/AdSet budget endpoints.",
+        },
+        PlatformId::GoogleAds => PlatformMeta {
+            id,
+            region: PlatformRegion::GlobalOverseas,
+            name_zh: id.display_name_zh(),
+            name_en: id.display_name_en(),
+            access_mode: ApiAccessMode::OfficialPublicApi,
+            base_url: "https://googleads.googleapis.com/v18",
+            docs_url: "https://developers.google.com/google-ads/api/docs/reporting/overview",
+            auth_scheme: "OAuth 2.0 Bearer + `developer-token` + optional `login-customer-id` (MCC)",
+            monetary_unit: "cost_micros (1_000_000 micros = 1 currency unit) -> FX base fen",
+            max_sync_days_per_chunk: 90,
+            default_qps: 8.0,
+            supports_ad_mutation: true,
+            supports_hourly_report: true,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /v18/customers/{customer_id}/campaigns:mutate",
+                "POST /v18/customers/{customer_id}/adGroups:mutate",
+                "POST /v18/customers/{customer_id}/adGroupAds:mutate",
+            ],
+            official_endpoints: vec![
+                "POST /v18/customers/{customer_id}/googleAds:searchStream",
+                "GET /v18/customers:listAccessibleCustomers",
+                "POST /v18/customers/{customer_id}/campaigns:mutate",
+            ],
+            field_mappings: vec![
+                OfficialFieldMapping {
+                    canonical_field: "gross_cost_fen",
+                    official_field: "metrics.cost_micros",
+                    official_unit: "micros (10^-6 customer.currency_code) -> FX base fen",
+                    notes: "Exact integer micros converted cleanly via currency code FX multiplier",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "conversions / gmv_fen",
+                    official_field: "metrics.conversions / metrics.conversions_value",
+                    official_unit: "float / account currency",
+                    notes: "Includes `customer.currency_code` and `segments.date` in GAQL",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "impressions / clicks / video_plays",
+                    official_field: "metrics.impressions / metrics.clicks / metrics.video_views",
+                    official_unit: "count",
+                    notes: "Unified across Search, PMax, Demand Gen, and YouTube campaigns",
+                },
+            ],
+            compliance_note: "Requires Google Ads API developer-token; MCC hierarchies should supply `login_customer_id`.",
+        },
+        PlatformId::AppleSearchAds => PlatformMeta {
+            id,
+            region: PlatformRegion::GlobalOverseas,
+            name_zh: id.display_name_zh(),
+            name_en: id.display_name_en(),
+            access_mode: ApiAccessMode::OfficialPublicApi,
+            base_url: "https://api.searchads.apple.com/api/v5",
+            docs_url: "https://developer.apple.com/documentation/apple_ads",
+            auth_scheme: "OAuth 2.0 Client Credentials + ES256 (ECDSA P-256) JWT client_secret + `X-AP-Context: orgId=...`",
+            monetary_unit: "localSpend { amount, currency } -> FX base fen",
+            max_sync_days_per_chunk: 90,
+            default_qps: 4.0,
+            supports_ad_mutation: true,
+            supports_hourly_report: false,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /api/v5/campaigns",
+                "POST /api/v5/campaigns/{campaignId}/adgroups",
+                "POST /api/v5/campaigns/{campaignId}/adgroups/{adGroupId}/ads",
+            ],
+            official_endpoints: vec![
+                "POST /api/v5/reports/campaigns",
+                "GET /api/v5/acls",
+                "PUT /api/v5/campaigns/{campaignId}",
+            ],
+            field_mappings: vec![
+                OfficialFieldMapping {
+                    canonical_field: "gross_cost_fen",
+                    official_field: "localSpend.amount (with localSpend.currency)",
+                    official_unit: "currency decimal string -> FX base fen",
+                    notes: "Supports pure-Rust ES256 JWT generation (`sign_apple_es256_client_secret`)",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "impressions / clicks / conversions",
+                    official_field: "impressions / taps / tapInstalls (or totalInstalls)",
+                    official_unit: "count",
+                    notes: "App Store taps & installs",
+                },
+            ],
+            compliance_note: "Requires `X-AP-Context: orgId=<org_id>` header; Apple scheduled v5 sunset for Jan 2027 in favor of `api.ads.apple.com/v1/` (supports base_url_override).",
+        },
+        PlatformId::AmazonAds => PlatformMeta {
+            id,
+            region: PlatformRegion::GlobalOverseas,
+            name_zh: id.display_name_zh(),
+            name_en: id.display_name_en(),
+            access_mode: ApiAccessMode::OfficialPublicApi,
+            base_url: "https://advertising-api.amazon.com",
+            docs_url: "https://advertising.amazon.com/API/docs/en-us/reporting/v3/overview",
+            auth_scheme: "Login with Amazon (LWA OAuth2) + `Amazon-Ads-ClientId` + `Amazon-Advertising-API-Scope`",
+            monetary_unit: "marketplace currency float (cost, sales14d) -> FX base fen",
+            max_sync_days_per_chunk: 31,
+            default_qps: 5.0,
+            supports_ad_mutation: true,
+            supports_hourly_report: false,
+            ad_creation_support: AdCreationSupport::OfficialPublicApi,
+            ad_creation_endpoints: vec![
+                "POST /sp/campaigns",
+                "POST /sp/adGroups",
+                "POST /sp/productAds",
+            ],
+            official_endpoints: vec![
+                "POST /reporting/reports",
+                "GET /reporting/reports/{reportId}",
+                "GET /v2/profiles",
+                "PUT /sp/campaigns",
+            ],
+            field_mappings: vec![
+                OfficialFieldMapping {
+                    canonical_field: "gross_cost_fen",
+                    official_field: "cost",
+                    official_unit: "marketplace currency float -> FX base fen",
+                    notes: "Sponsored Products / Brands / Display v3 report columns",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "orders / gmv_fen",
+                    official_field: "purchases14d / sales14d",
+                    official_unit: "count / marketplace currency",
+                    notes: "14-day attribution window for Amazon marketplace conversions",
+                },
+                OfficialFieldMapping {
+                    canonical_field: "impressions / clicks",
+                    official_field: "impressions / clicks",
+                    official_unit: "count",
+                    notes: "Async report endpoints return AsyncTaskPending when report is still generating",
+                },
+            ],
+            compliance_note: "Max 31 days per v3 report request and 95-day retention; live `/reporting/reports` is async and returns a downloadable GZIP_JSON report location once COMPLETED.",
         },
     }
 }

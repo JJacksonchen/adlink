@@ -1,0 +1,56 @@
+services:
+  adlink:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adlink-prod
+    expose:
+      - "8787"
+    volumes:
+      - ./data:/app/data
+      - ./config/adlink.example.toml:/app/config/adlink.toml:ro
+      - ./web-starter:/app/web-starter:ro
+    environment:
+      - RUST_LOG=info
+      - ADLINK_CONFIG=/app/config/adlink.toml
+      - ADLINK_API_KEY=${ADLINK_API_KEY}
+      - TIKTOK_ADS_ACCESS_TOKEN=${TIKTOK_ADS_ACCESS_TOKEN:-}
+      - META_ADS_ACCESS_TOKEN=${META_ADS_ACCESS_TOKEN:-}
+      - GOOGLE_ADS_ACCESS_TOKEN=${GOOGLE_ADS_ACCESS_TOKEN:-}
+      - GOOGLE_ADS_DEVELOPER_TOKEN=${GOOGLE_ADS_DEVELOPER_TOKEN:-}
+      - GOOGLE_ADS_MCC_ID=${GOOGLE_ADS_MCC_ID:-}
+      - APPLE_ADS_CLIENT_ID=${APPLE_ADS_CLIENT_ID:-}
+      - APPLE_ADS_TEAM_ID=${APPLE_ADS_TEAM_ID:-}
+      - APPLE_ADS_KEY_ID=${APPLE_ADS_KEY_ID:-}
+      - APPLE_ADS_ES256_KEY_PEM=${APPLE_ADS_ES256_KEY_PEM:-}
+      - APPLE_ADS_ACCESS_TOKEN=${APPLE_ADS_ACCESS_TOKEN:-}
+      - APPLE_ADS_ORG_ID=${APPLE_ADS_ORG_ID:-}
+      - AMAZON_ADS_ACCESS_TOKEN=${AMAZON_ADS_ACCESS_TOKEN:-}
+      - AMAZON_ADS_CLIENT_ID=${AMAZON_ADS_CLIENT_ID:-}
+      - AMAZON_ADS_PROFILE_ID=${AMAZON_ADS_PROFILE_ID:-}
+    command: ["serve", "--config", "/app/config/adlink.toml"]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: adlink-gateway
+    depends_on:
+      adlink:
+        condition: service_healthy
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped

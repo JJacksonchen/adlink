@@ -41,8 +41,11 @@ pub async fn api_key_middleware(
     }
 
     let path = req.uri().path();
-    // Keep health check, OpenAPI discovery, and static Web starter accessible without secret header.
-    if path == "/api/v1/health"
+    // Keep Kubernetes/Prometheus probes, legacy health, OpenAPI discovery, and static Web starter open.
+    if path == "/healthz"
+        || path == "/readyz"
+        || path == "/metrics"
+        || path == "/api/v1/health"
         || path == "/api/v1/openapi.json"
         || (!path.starts_with("/api/")
             && path != "/mcp"

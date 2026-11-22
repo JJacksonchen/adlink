@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adlink_domain::{
@@ -16,61 +17,126 @@ use adlink_domain::{
 use adlink_kernel::{KernelError, KernelResult, Plugin, PluginCategory, PluginContext, PluginHealth, PluginManifest};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::migrations::{configure_connection, run_migrations};
+use crate::migrations::{configure_reader_connection, configure_writer_connection, run_migrations};
 use crate::queries::{compute_creative_attribution, evaluate_report_query, parse_date, AttributionUniverse};
 use crate::{StorageError, StorageResult, StorageService};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SqlitePluginConfig {
     pub db_path: String,
+    #[serde(default = "default_reader_pool_size")]
+    pub reader_pool_size: usize,
+}
+
+fn default_reader_pool_size() -> usize {
+    8
 }
 
 /// Production SQLite WAL storage engine packaged as a kernel plugin.
+/// Separates a single transactional writer connection from an N-connection
+/// read-only pool so analytical queries parallelize without contending with batch upserts.
 pub struct SqliteStorage {
     db_path: PathBuf,
     writer: Arc<Mutex<Connection>>,
+    readers: Vec<Arc<Mutex<Connection>>>,
+    next_reader: AtomicUsize,
+    write_epoch: Arc<AtomicU64>,
 }
 
 impl SqliteStorage {
-    /// Opens or initializes the SQLite database at `path` (supports `:memory:` or file paths).
+    /// Opens or initializes the SQLite database at `path` with a default 8-reader WAL pool.
     pub fn open(path: impl Into<PathBuf>) -> StorageResult<Self> {
+        Self::open_with_pool(path, default_reader_pool_size())
+    }
+
+    /// Opens the database with an explicit read-only connection pool size (`>= 1`).
+    pub fn open_with_pool(path: impl Into<PathBuf>, reader_pool_size: usize) -> StorageResult<Self> {
         let db_path = path.into();
-        if let Some(parent) = db_path.parent() {
-            if !parent.as_os_str().is_empty() && db_path.to_string_lossy() != ":memory:" {
-                std::fs::create_dir_all(parent)?;
+        let is_memory = db_path.to_string_lossy() == ":memory:";
+        if !is_memory {
+            if let Some(parent) = db_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
             }
         }
-        let conn = if db_path.to_string_lossy() == ":memory:" {
+        let writer_conn = if is_memory {
             Connection::open_in_memory()?
         } else {
             Connection::open(&db_path)?
         };
-        run_migrations(&conn)?;
+        run_migrations(&writer_conn)?;
+        configure_writer_connection(&writer_conn)?;
+        let writer = Arc::new(Mutex::new(writer_conn));
+
+        let readers = if is_memory {
+            // SQLite `:memory:` handles cannot share state across independent handles unless
+            // named with shared cache; keep the single handle as the pool entry in-memory.
+            vec![Arc::clone(&writer)]
+        } else {
+            let count = reader_pool_size.max(1);
+            let mut pool = Vec::with_capacity(count);
+            for _ in 0..count {
+                let r = Connection::open_with_flags(
+                    &db_path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+                )?;
+                configure_reader_connection(&r)?;
+                pool.push(Arc::new(Mutex::new(r)));
+            }
+            pool
+        };
+
         Ok(Self {
             db_path,
-            writer: Arc::new(Mutex::new(conn)),
+            writer,
+            readers,
+            next_reader: AtomicUsize::new(0),
+            write_epoch: Arc::new(AtomicU64::new(1)),
         })
     }
 
-    /// Runs a blocking SQLite operation on the dedicated Tokio blocking pool.
-    async fn with_conn<F, R>(&self, f: F) -> StorageResult<R>
+    /// Runs a mutating SQLite transaction on the single serialized writer connection,
+    /// bumping `write_epoch` upon success so upper-layer query caches invalidate cleanly.
+    async fn with_writer<F, R>(&self, f: F) -> StorageResult<R>
     where
         F: FnOnce(&mut Connection) -> StorageResult<R> + Send + 'static,
         R: Send + 'static,
     {
         let writer = Arc::clone(&self.writer);
+        let write_epoch = Arc::clone(&self.write_epoch);
         tokio::task::spawn_blocking(move || {
             let mut guard = writer
                 .lock()
-                .map_err(|_| StorageError::DataIntegrity("sqlite mutex poisoned".into()))?;
-            f(&mut guard)
+                .map_err(|_| StorageError::DataIntegrity("sqlite writer mutex poisoned".into()))?;
+            let out = f(&mut guard)?;
+            write_epoch.fetch_add(1, Ordering::Release);
+            Ok(out)
         })
         .await
-        .map_err(|e| StorageError::DataIntegrity(format!("blocking join failed: {e}")))?
+        .map_err(|e| StorageError::DataIntegrity(format!("blocking writer join failed: {e}")))?
+    }
+
+    /// Runs a read-only query on a round-robin connection from the WAL reader pool.
+    async fn with_reader<F, R>(&self, f: F) -> StorageResult<R>
+    where
+        F: FnOnce(&Connection) -> StorageResult<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let idx = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        let reader = Arc::clone(&self.readers[idx]);
+        tokio::task::spawn_blocking(move || {
+            let guard = reader
+                .lock()
+                .map_err(|_| StorageError::DataIntegrity("sqlite reader mutex poisoned".into()))?;
+            f(&guard)
+        })
+        .await
+        .map_err(|e| StorageError::DataIntegrity(format!("blocking reader join failed: {e}")))?
     }
 
     pub fn db_path(&self) -> &PathBuf {
@@ -160,7 +226,7 @@ fn serialize_enum_str<T: Serialize>(v: &T) -> StorageResult<String> {
 impl StorageService for SqliteStorage {
     async fn upsert_organization(&self, org: &Organization) -> StorageResult<()> {
         let org = org.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let org_type = serialize_enum_str(&org.org_type)?;
             conn.execute(
                 "INSERT INTO organizations (id, name, org_type, default_currency)
@@ -177,7 +243,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_organizations(&self) -> StorageResult<Vec<Organization>> {
-        self.with_conn(|conn| {
+        self.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, name, org_type, default_currency FROM organizations ORDER BY id",
             )?;
@@ -206,7 +272,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_person(&self, person: &Person) -> StorageResult<()> {
         let p = person.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let role = serialize_enum_str(&p.role)?;
             conn.execute(
                 "INSERT INTO people (id, org_id, name, email, department, role, monthly_cost_fen, active)
@@ -236,12 +302,12 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_people(&self) -> StorageResult<Vec<Person>> {
-        self.with_conn(|conn| load_people(conn)).await
+        self.with_reader(|conn| load_people(conn)).await
     }
 
     async fn upsert_ad_account(&self, acct: &AdAccount) -> StorageResult<()> {
         let a = acct.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let acct_type = serialize_enum_str(&a.account_type)?;
             let extra = to_json(&a.extra)?;
             conn.execute(
@@ -282,7 +348,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_ad_accounts(&self, platform: Option<PlatformId>) -> StorageResult<Vec<AdAccount>> {
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut all = load_accounts(conn)?;
             if let Some(p) = platform {
                 all.retain(|a| a.platform == p);
@@ -297,7 +363,7 @@ impl StorageService for SqliteStorage {
         binding: &PersonAccountBinding,
     ) -> StorageResult<()> {
         let b = binding.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let role = serialize_enum_str(&b.relation_role)?;
             conn.execute(
                 "INSERT INTO person_account_bindings (
@@ -326,7 +392,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_person_account_bindings(&self) -> StorageResult<Vec<PersonAccountBinding>> {
-        self.with_conn(|conn| load_bindings(conn)).await
+        self.with_reader(|conn| load_bindings(conn)).await
     }
 
     async fn delete_person_account_bindings_for_account(
@@ -334,7 +400,7 @@ impl StorageService for SqliteStorage {
         ad_account_id: &str,
     ) -> StorageResult<usize> {
         let acct = ad_account_id.to_string();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let n = conn.execute(
                 "DELETE FROM person_account_bindings WHERE ad_account_id = ?1",
                 params![acct],
@@ -346,7 +412,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_project(&self, project: &Project) -> StorageResult<()> {
         let p = project.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let pt = serialize_enum_str(&p.project_type)?;
             let sm = serialize_enum_str(&p.settlement_mode)?;
             let tags = to_json(&p.tags)?;
@@ -397,12 +463,12 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_projects(&self) -> StorageResult<Vec<Project>> {
-        self.with_conn(|conn| load_projects(conn)).await
+        self.with_reader(|conn| load_projects(conn)).await
     }
 
     async fn upsert_project_account_link(&self, link: &ProjectAccountLink) -> StorageResult<()> {
         let l = link.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             conn.execute(
                 "INSERT INTO project_account_links (id, project_id, ad_account_id, campaign_filter_regex, allocation_weight)
                  VALUES (?1, ?2, ?3, ?4, ?5)
@@ -425,7 +491,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_project_account_links(&self) -> StorageResult<Vec<ProjectAccountLink>> {
-        self.with_conn(|conn| load_project_links(conn)).await
+        self.with_reader(|conn| load_project_links(conn)).await
     }
 
     async fn delete_project_account_links_for_account(
@@ -433,7 +499,7 @@ impl StorageService for SqliteStorage {
         ad_account_id: &str,
     ) -> StorageResult<usize> {
         let acct = ad_account_id.to_string();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let n = conn.execute(
                 "DELETE FROM project_account_links WHERE ad_account_id = ?1",
                 params![acct],
@@ -445,7 +511,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_creative_asset(&self, asset: &CreativeAsset) -> StorageResult<()> {
         let a = asset.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let fmt = serialize_enum_str(&a.taxonomy.format)?;
             let hook = serialize_enum_str(&a.taxonomy.hook_type)?;
             let custom_tags = to_json(&a.taxonomy.custom_tags)?;
@@ -492,12 +558,12 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_creative_assets(&self) -> StorageResult<Vec<CreativeAsset>> {
-        self.with_conn(|conn| load_creative_assets(conn)).await
+        self.with_reader(|conn| load_creative_assets(conn)).await
     }
 
     async fn upsert_creative_platform_link(&self, link: &CreativePlatformLink) -> StorageResult<()> {
         let l = link.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             conn.execute(
                 "INSERT INTO creative_platform_links (id, asset_id, platform, ad_account_id, platform_creative_id, platform_content_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -519,7 +585,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_creative_platform_links(&self) -> StorageResult<Vec<CreativePlatformLink>> {
-        self.with_conn(|conn| load_creative_links(conn)).await
+        self.with_reader(|conn| load_creative_links(conn)).await
     }
 
     async fn upsert_creative_contribution(
@@ -527,7 +593,7 @@ impl StorageService for SqliteStorage {
         contrib: &CreativeProductionContribution,
     ) -> StorageResult<()> {
         let c = contrib.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let role = serialize_enum_str(&c.role)?;
             conn.execute(
                 "INSERT INTO creative_production_contributions (id, asset_id, person_id, role, work_hours, credit_weight, piece_cost_fen)
@@ -557,12 +623,12 @@ impl StorageService for SqliteStorage {
     async fn list_creative_contributions(
         &self,
     ) -> StorageResult<Vec<CreativeProductionContribution>> {
-        self.with_conn(|conn| load_creative_contributions(conn)).await
+        self.with_reader(|conn| load_creative_contributions(conn)).await
     }
 
     async fn upsert_custom_caliber(&self, caliber: &CustomCaliberDef) -> StorageResult<()> {
         let c = caliber.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let cat = serialize_enum_str(&c.category)?;
             conn.execute(
                 "INSERT INTO custom_calibers (id, name, display_name, category, formula, unit, description, enabled)
@@ -591,7 +657,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_custom_calibers(&self) -> StorageResult<Vec<CustomCaliberDef>> {
-        self.with_conn(|conn| load_custom_calibers(conn)).await
+        self.with_reader(|conn| load_custom_calibers(conn)).await
     }
 
     async fn upsert_reports(&self, rows: &[UnifiedReportRow]) -> StorageResult<usize> {
@@ -599,7 +665,7 @@ impl StorageService for SqliteStorage {
             return Ok(0);
         }
         let owned = rows.to_vec();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let mut total = 0usize;
             // Chunk inside BEGIN IMMEDIATE transactions to sustain high throughput under WAL.
             for chunk in owned.chunks(500) {
@@ -691,7 +757,7 @@ impl StorageService for SqliteStorage {
             return Ok(0);
         }
         let owned = rows.to_vec();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut total = 0usize;
             {
@@ -741,7 +807,7 @@ impl StorageService for SqliteStorage {
         ad_account_id: Option<&str>,
     ) -> StorageResult<Vec<DailyFundStatement>> {
         let acct = ad_account_id.map(str::to_string);
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT platform, ad_account_id, platform_account_id, stat_date,
                         cash_balance_fen, grant_balance_fen, cash_cost_fen, grant_cost_fen,
@@ -799,7 +865,7 @@ impl StorageService for SqliteStorage {
 
     async fn query_reports(&self, query: &ReportQuery) -> StorageResult<Vec<UnifiedReportRow>> {
         let q = query.clone();
-        self.with_conn(move |conn| load_reports_filtered(conn, &q))
+        self.with_reader(move |conn| load_reports_filtered(conn, &q))
             .await
     }
 
@@ -808,7 +874,7 @@ impl StorageService for SqliteStorage {
         query: &ReportQuery,
     ) -> StorageResult<(CaliberReconciliation, Vec<CaliberReconciliation>)> {
         let q = query.clone();
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let rows = load_reports_filtered(conn, &q)?;
             let universe = load_universe(conn, q.start_date, q.end_date)?;
             evaluate_report_query(&rows, &q, &universe)
@@ -829,7 +895,7 @@ impl StorageService for SqliteStorage {
         Vec<SeedingBoostAttributionRow>,
     )> {
         let proj = project_id.map(str::to_string);
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let assets = load_creative_assets(conn)?;
             let links = load_creative_links(conn)?;
             let contribs = load_creative_contributions(conn)?;
@@ -857,7 +923,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_sync_job(&self, job: &SyncJobRecord) -> StorageResult<()> {
         let j = job.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let plats = to_json(&j.platforms)?;
             conn.execute(
                 "INSERT INTO sync_jobs (
@@ -893,7 +959,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_sync_jobs(&self, limit: usize) -> StorageResult<Vec<SyncJobRecord>> {
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, status, platforms_json, start_date, end_date, total_chunks,
                         completed_chunks, failed_chunks, rows_upserted, started_at, finished_at, error_summary
@@ -946,7 +1012,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_sync_checkpoint(&self, cp: &SyncCheckpoint) -> StorageResult<()> {
         let c = cp.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             conn.execute(
                 "INSERT INTO sync_checkpoints (
                     job_id, platform, ad_account_id, level, chunk_start, chunk_end,
@@ -977,7 +1043,7 @@ impl StorageService for SqliteStorage {
 
     async fn list_sync_checkpoints(&self, job_id: &str) -> StorageResult<Vec<SyncCheckpoint>> {
         let jid = job_id.to_string();
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT job_id, platform, ad_account_id, level, chunk_start, chunk_end,
                         status, rows_fetched, error_message, updated_at
@@ -1024,7 +1090,7 @@ impl StorageService for SqliteStorage {
 
     async fn append_audit_log(&self, entry: &AuditLogEntry) -> StorageResult<()> {
         let e = entry.clone();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let ids = to_json(&e.entity_ids)?;
             let detail = to_json(&e.detail)?;
             conn.execute(
@@ -1053,7 +1119,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn list_audit_logs(&self, limit: usize) -> StorageResult<Vec<AuditLogEntry>> {
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, timestamp, operator, source, platform, ad_account_id,
                         action, entity_ids_json, dry_run, status, reason, detail_json
@@ -1104,7 +1170,7 @@ impl StorageService for SqliteStorage {
 
     async fn upsert_ad_entities(&self, entities: &[AdEntity]) -> StorageResult<()> {
         let owned = entities.to_vec();
-        self.with_conn(move |conn| {
+        self.with_writer(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             {
                 let mut stmt = tx.prepare_cached(
@@ -1151,7 +1217,7 @@ impl StorageService for SqliteStorage {
     ) -> StorageResult<Vec<AdEntity>> {
         let plat = platform.map(|p| p.as_str().to_string());
         let acct = ad_account_id.map(str::to_string);
-        self.with_conn(move |conn| {
+        self.with_reader(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT platform, ad_account_id, level, entity_id, entity_name,
                         parent_entity_id, status, daily_budget_fen, bid_fen, updated_at, raw_extra_json
@@ -1202,7 +1268,7 @@ impl StorageService for SqliteStorage {
     }
 
     async fn count_report_rows(&self) -> StorageResult<usize> {
-        self.with_conn(|conn| {
+        self.with_reader(|conn| {
             let cnt: Option<i64> = conn
                 .query_row("SELECT COUNT(*) FROM unified_reports", [], |r| r.get(0))
                 .optional()?;
@@ -1212,14 +1278,17 @@ impl StorageService for SqliteStorage {
     }
 
     async fn db_health_summary(&self) -> StorageResult<Value> {
-        self.with_conn(|conn| {
-            configure_connection(conn)?;
+        let reader_pool_size = self.readers.len();
+        let epoch = self.write_epoch.load(Ordering::Acquire);
+        self.with_reader(move |conn| {
             let count = |table: &str| -> i64 {
                 conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                     .unwrap_or(0)
             };
             Ok(serde_json::json!({
                 "engine": "sqlite_wal",
+                "reader_pool_size": reader_pool_size,
+                "write_epoch": epoch,
                 "organizations": count("organizations"),
                 "people": count("people"),
                 "ad_accounts": count("ad_accounts"),
@@ -1232,6 +1301,29 @@ impl StorageService for SqliteStorage {
             }))
         })
         .await
+    }
+
+    fn write_epoch(&self) -> u64 {
+        self.write_epoch.load(Ordering::Acquire)
+    }
+
+    async fn checkpoint_truncate(&self) -> StorageResult<()> {
+        if self.db_path.to_string_lossy() == ":memory:" {
+            return Ok(());
+        }
+        self.with_writer(|conn| {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            Ok(())
+        })
+        .await
+    }
+
+    fn pool_stats(&self) -> Value {
+        serde_json::json!({
+            "reader_pool_size": self.readers.len(),
+            "write_epoch": self.write_epoch.load(Ordering::Acquire),
+            "db_path": self.db_path.display().to_string(),
+        })
     }
 }
 

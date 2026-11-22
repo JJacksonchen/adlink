@@ -12,6 +12,8 @@ pub fn ui_schema() -> Value {
                 "value": p.as_str(),
                 "label_zh": p.display_name_zh(),
                 "label_en": p.display_name_en(),
+                "region": p.region(),
+                "default_currency": p.default_currency(),
                 "access_mode": p.meta().access_mode
             })
         })

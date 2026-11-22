@@ -9,7 +9,7 @@
 ## 标准引导 SOP（供 Agent 执行）
 
 ### 第一步：探测环境、官方 MCP 状况与创编开关状态
-1. 调用 `adlink_health_check` 确认内核、SQLite WAL 数据库以及 10 个连接器的当前运行状态（`mock` 或 `live`）。
+1. 调用 `adlink_health_check` 确认内核、SQLite WAL 读写池（含 `write_epoch`）以及全部 **15 个国内外连接器**（国内 10 个 + 海外 `tiktok_ads`、`meta_ads`、`google_ads`、`apple_search_ads`、`amazon_ads`）的当前运行状态（`mock` 或 `live`）。
 2. 调用 `adlink_creation_status_and_risks` 检查当前 `[ad_creation]` 开关状态（**默认恒为 `enabled = false`**），获取官方要求的用户询问话术与 5 项风险提醒。
 
 ### 第二步：双层登录与账户发现（最优复用官方 MCP + 降级直连兜底）
@@ -21,7 +21,9 @@
    - 调用 **`adlink_relabel_account_governance`**，把真实人-户关系（含优化师、分摊权重 `split_weight`、生效期）和项目归属（含 `project_type`、`campaign_filter_regex`）直接在 AdLink 中自由**重标**。
 
 2. **降级方案（Tier 2 — 拉取账户列表 + 自行创建项目关联子账户）**：
-   - 若媒体平台暂未提供官方 MCP 或客户需要服务端无头对接，引导用户配置开放平台 API 凭据（永远将密钥放入 `.env`，通过 `${ENV_VAR}` 注入 `config/adlink.local.toml`）。
+   - 若媒体平台暂未提供官方 MCP 或客户需要服务端无头对接，引导用户配置开放平台 API 凭据（永远将密钥放入 `.env`，通过 `${ENV_VAR}` 注入 `config/adlink.local.toml`）：
+     - 海外平台补充凭据：`google_ads` 需 `developer_token`（及可选 MCC `login_customer_id`）；`apple_search_ads` 需 `app_id`/`team_id`/`key_id` + `named_curve` P-256 PKCS#8 `es256_private_key_pem` + `org_id`；`amazon_ads` 需 `app_id`（`Amazon-Ads-ClientId`）+ `amazon_profile_id`。
+     - 海外多币种账户可通过 `extra.currency` / `[fx_rates]` 将 USD/EUR/GBP/JPY 统一折算为人民币基准 `Fen`。
    - 调用 `adlink_discover_platform_accounts` 拉取授权子账户列表。
    - 引导用户选定子账户，调用 **`adlink_fallback_bootstrap_project`** 一键创建自定义项目并关联选中子账户与负责优化师。
 
@@ -46,7 +48,7 @@
 
 ---
 
-### 第四步：小窗口冒烟验证与口径对账
-1. 先调用 `adlink_sync_reports` 同步近 **3 天**数据进行冒烟校验，核对关键指标与货币换算。
+### 第四步：小窗口冒烟验证、高并发异步入队与口径对账
+1. 先调用 `adlink_sync_reports` 同步近 **3 天**数据进行冒烟校验，核对关键指标与货币换算；针对超大规模历史回溯可通过商业服务端 `POST /api/v1/sync/jobs/enqueue` 异步入队（`202 Accepted`），并轮询 `GET /api/v1/sync/jobs/{id}` 或配置 `webhook_url` 接收回调（服务端同时暴露 `/healthz`、`/readyz`、`/metrics`）。
 2. 再并发同步长周期历史数据（如 90~180 天），调用 `adlink_reconcile_calibers` 对齐账面消耗、现金消耗、返点后净消耗与代理商净营收 / 客户自定义口径。
 3. 任何启停调预算 (`adlink_ad_mutate`) 一律先 `dry_run: true` 预览并在用户确认后执行。

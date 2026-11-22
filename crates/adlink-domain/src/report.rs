@@ -70,6 +70,7 @@ impl TimeLine {
 
 /// Canonical unified report row stored with zero loss of official upstream fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UnifiedReportRow {
     pub platform: PlatformId,
     pub ad_account_id: String,

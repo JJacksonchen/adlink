@@ -20,8 +20,8 @@ RUN mkdir -p /app/data && chown -R adlink:adlink /app
 USER adlink
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD curl -fsS http://127.0.0.1:8787/api/v1/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8787/healthz || exit 1
 
 ENTRYPOINT ["adlink"]
 CMD ["serve", "--config", "/app/config/adlink.mock.toml", "--seed-mock"]

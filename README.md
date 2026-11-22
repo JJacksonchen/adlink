@@ -1,6 +1,6 @@
 # AdLink — 广告投放数据底座与 AI-Native MCP 中间件
 
-> **数字化是 AI Native 的前提。** AdLink（Apache-2.0 开源可商用）是一个用 **Rust** 构建的高性能、高度解耦的广告数据治理与 MCP 中间件，打通 **8 大主流国内广告/内容营销平台（10 个逻辑连接器）** 与企业内部数据、人户治理及多端 AI Agent 生态。
+> **数字化是 AI Native 的前提。** AdLink（Apache-2.0 开源可商用）是一个用 **Rust** 构建的高性能、高度解耦的广告数据治理与 MCP 中间件，打通 **国内 10 大连接器 + 海外 5 大主流平台（共 15 个平台连接器）**，支持多币种 FX 折算与企业内部治理、多端 AI Agent 生态以及高并发商业化生产服务端架构。
 
 [English README](README.en.md) · [Agent API 接入引导手册 (AGENT_GUIDE)](AGENT_GUIDE.md) · [Agent Skill (SKILL.md)](SKILL.md) · [官方 API 逐字段核对表](docs/platform-api-mapping.md) · [架构设计](docs/architecture.md) · [插件二开指南](docs/plugin-development.md)
 
@@ -90,14 +90,10 @@ flowchart TB
         E5["SQLite WAL 事务批量写入 + 归因查询引擎"]
     end
 
-    subgraph Connectors["8 大媒体官方连接器插件层 (adlink-connectors)"]
-        C1["腾讯社交广告 AMS v3.0"]
-        C2["小红书聚光 & 乘风"]
-        C3["小红书蒲公英 (合规白名单/导表)"]
-        C4["B站三连/起飞 & 花火商单"]
-        C5["快手磁力引擎 v1"]
-        C6["巨量引擎 AD & 本地推 v3.0"]
-        C7["支付宝灯火 (纯 Rust RSA2)"]
+    subgraph Connectors["15 大国内外媒体官方连接器插件层 (adlink-connectors)"]
+        C1["国内: 腾讯 AMS v3.0 · 小红书聚光/乘风/蒲公英"]
+        C2["国内: B站三连/花火 · 快手磁力 · 巨量 AD/本地推 · 支付宝灯火"]
+        C3["海外: TikTok v1.3 · Meta v21.0 · Google v18 · Apple Search Ads v5 (ES256) · Amazon v3"]
     end
 
     Agents --> Transport
@@ -127,9 +123,11 @@ erDiagram
 
 ---
 
-## 5. 支持的 8 大主流媒体平台与官方字段对齐
+## 5. 支持的 15 大国内外主流媒体平台与官方字段对齐
 
-> 逐字段实时拉取核验（含请求参数约束、创编接口支持级别与官方限制）：参见 **[docs/platform-api-mapping.md](docs/platform-api-mapping.md)**。
+> 逐字段实时拉取核验（含多币种 FX 折算、请求参数约束、创编接口支持级别与官方下线预告）：参见 **[docs/platform-api-mapping.md](docs/platform-api-mapping.md)**。
+
+### 国内主流平台（10 个连接器）
 
 | 平台 | 连接器 ID | 接入性质 | 官方基础域名 / 协议 | 货币单位归一化 | 最大单次切片 | 核心官方字段保留 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -144,11 +142,31 @@ erDiagram
 | **巨量本地推** | `ocean_engine_local` | 公开 MAPI v3.0 | `https://api.oceanengine.com/open_api/v3.0/local` | **元 -> 精确转分** | 30 天 | `stat_cost`, `show_cnt`, `click_cnt`, `pay_order_amount`, `poi_id`, `local_life_verify_cnt` |
 | **支付宝灯火** | `alipay_denghuo` | 公开 OpenAPI | `https://openapi.alipay.com/gateway.do` (**纯 Rust RSA2**) | 分 -> `Fen` | 7 天 (小时1天) | `cost`, `impression`, `click`, `conv_result`, `conversion_data_list`, `biz_date` |
 
-> **合规与完整性承诺**：小红书蒲公英与 B站花火目前均无公开免审批自助 API，AdLink **严禁任何违规爬虫或绕过风控手段**，诚实采用「官方白名单接口 + 结构化结算导出打通」双路径，所有原始字段均无损留存于 `unified_reports.raw_fields_json`。
+### 海外主流平台（5 个连接器 · 多币种 `[fx_rates]` 自动折算基准 CNY `Fen`）
+
+| 平台 | 连接器 ID | 官方 API 版本 | 鉴权与关键请求头 | 单位换算与官方注意 | 最大单次切片 | 核心官方字段保留 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **TikTok Ads** | `tiktok_ads` | Marketing API `v1.3` | `Access-Token` | 原币种浮点 × FX -> `Fen` | 30 天 | `spend`, `impressions`, `clicks`, `complete_payment`, `total_complete_payment_value` |
+| **Meta Ads (FB/IG)** | `meta_ads` | Graph API `v21.0` | `Authorization: Bearer` | Insights 主币种字符串；创编自动转**最小整数分 (cents)**；优先 `omni_purchase` | 30 天 | `spend`, `impressions`, `clicks`, `actions[]`, `action_values[]` |
+| **Google Ads** | `google_ads` | Google Ads API `v18` | `Bearer` + `developer-token` (+ MCC `login-customer-id`) | `costMicros` (`÷ 1,000,000` × FX -> `Fen`) | 90 天 | `metrics.costMicros`, `metrics.conversions`, `metrics.conversionsValue` |
+| **Apple Search Ads** | `apple_search_ads` | Ads API `v5` | `Bearer` (**纯 Rust ES256 P-256 JWT**) + `X-AP-Context` | `localSpend.amount` × FX -> `Fen`（⚠️ v5 计划 2027-01 下线） | 30 天 | `localSpend`, `impressions`, `taps`, `tapInstalls` |
+| **Amazon Ads** | `amazon_ads` | Ads API `v3` | `Bearer` + `Amazon-Ads-ClientId` + `Scope` Profile | 异步报告 `PENDING` 返回 `AsyncTaskPending`（⚠️ v3 预计 2027-06 迁移） | 31 天 | `cost`, `purchases14d`, `sales14d`, `advertisedAsin` |
+
+> **合规与完整性承诺**：小红书蒲公英与 B站花火目前均无公开免审批自助 API，AdLink **严禁任何违规爬虫或绕过风控手段**，诚实采用「官方白名单接口 + 结构化结算导出打通」双路径，所有原始字段（含海外平台 `original_currency`、`fx_rate_to_base`、`original_spend`）均无损留存于 `unified_reports.raw_fields_json`。
 
 ---
 
-## 6. 一站式快速安装与部署
+## 6. 高并发商业化生产服务端架构与一部署即用
+
+除了核心连接器与 MCP 工具外，AdLink `adlink-storage` + `adlink-api` + `adlink-cli` 按照高并发商业化生产标准实现：
+- **SQLite WAL 读写分离连接池**：单序列化写入通道（提交后递增 O(1) `write_epoch`）+ 可配置只读池（默认 `reader_pool_size = 8`，开启 `query_only = ON` 与 `mmap_size = 256MB`），高并发查询与批量写入零互斥阻塞。
+- **Epoch 失效多级分析缓存 (`AnalyticsQueryCache`)**：对 `/api/v1/analytics/query`、`/api/v1/analytics/reconcile`、`/api/v1/attribution/creatives` 提供毫秒级缓存命中（响应头 `X-Cache: HIT|MISS`），任意新数据写入或入库立即按 `write_epoch` 自动失效。
+- **幂等去重 (`Idempotency-Key`)**：`/api/v1/ingest`、`/api/v1/sync/jobs/enqueue`、`/api/v1/ad-ops/mutate`、`/api/v1/ad-creation/create` 支持请求幂等重放保护（响应头 `X-Idempotency-Replayed: true`）。
+- **自适应过载保护与分级限流**：信号量并发上限（`max_in_flight_requests` 饱和返回 `503 Service Unavailable` + `Retry-After`）、每租户/IP 令牌桶限流（`429 Too Many Requests`）、请求超时（`504`，自动豁免 `/sse` 长连接）、`DefaultBodyLimit` 载荷限制、`X-Request-Id` 与安全响应头。
+- **有界异步同步工作队列 + Webhook + 定时调度**：`POST /api/v1/sync/jobs/enqueue` 返回 `202 Accepted`，多 Worker 后台执行并通过 `GET /api/v1/sync/jobs/{id}` 查询进度；可选 `webhook_url` 回调与 `scheduled_sync_interval_secs` 自动增量拉数。
+- **云原生可观测与优雅停机**：提供 `GET /healthz`（存活性探针）、`GET /readyz`（就绪探针，收到 `SIGTERM`/`SIGINT` 后立即切为 `503` 摘流）、`GET /metrics`（Prometheus 文本指标：QPS、耗时直方图、缓存命中率、队列深度、WAL `write_epoch`）、JSON 结构化 `stderr` 日志，停机时自动排空工作队列并执行 `PRAGMA wal_checkpoint(TRUNCATE)`。
+
+## 7. 一站式快速安装与生产部署
 
 ### 方式 A：源码编译运行（5 分钟体验全量模拟数据）
 
@@ -171,12 +189,18 @@ cargo build --release -p adlink-cli
 - **OpenAPI 3.1 规范**：`http://127.0.0.1:8787/api/v1/openapi.json`
 - **Schema-Driven UI 契约**：`http://127.0.0.1:8787/api/v1/ui/schema`
 
-### 方式 B：Docker 一键部署
+### 方式 B：Docker / Nginx / Kubernetes 商业生产部署
 
 ```bash
 cp config/adlink.example.toml config/adlink.local.toml
-# 在 .env 中填入 ADLINK_API_KEY 及各媒体凭据（或先用 mock 模式跑通）
+# 单机 Docker
 docker compose up -d --build
+
+# 商业生产架构（Nginx Keepalive/SSE 代理 + /metrics 内网隔离 + /healthz 健康检查）
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Kubernetes StatefulSet（含 PVC WAL 持久化、/readyz 摘流、Prometheus 自动抓取）
+kubectl apply -f deploy/k8s-deployment.yaml
 ```
 
 ### 常用 CLI 命令

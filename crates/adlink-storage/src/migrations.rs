@@ -256,13 +256,36 @@ CREATE TABLE IF NOT EXISTS ad_entities_cache (
 
 /// Applies pragmas optimized for concurrent reads and durable transactional batch writes.
 pub fn configure_connection(conn: &Connection) -> Result<(), StorageError> {
+    configure_writer_connection(conn)
+}
+
+/// Applies writer pragmas: WAL journal, generous busy timeout, memory temp store,
+/// 16 MiB page cache, and periodic WAL autocheckpoint.
+pub fn configure_writer_connection(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA foreign_keys = ON;
-        PRAGMA busy_timeout = 5000;
+        PRAGMA busy_timeout = 10000;
         PRAGMA temp_store = MEMORY;
+        PRAGMA cache_size = -16384;
+        PRAGMA wal_autocheckpoint = 1000;
+        ",
+    )?;
+    Ok(())
+}
+
+/// Applies read-only pool pragmas (`query_only = ON`, mmap I/O, 16 MiB cache).
+pub fn configure_reader_connection(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        "
+        PRAGMA query_only = ON;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 10000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA cache_size = -16384;
+        PRAGMA mmap_size = 268435456;
         ",
     )?;
     Ok(())
@@ -270,7 +293,7 @@ pub fn configure_connection(conn: &Connection) -> Result<(), StorageError> {
 
 /// Runs idempotent schema creation on the database connection.
 pub fn run_migrations(conn: &Connection) -> Result<(), StorageError> {
-    configure_connection(conn)?;
+    configure_writer_connection(conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     Ok(())
 }
