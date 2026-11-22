@@ -1,5 +1,7 @@
 # AdLink AI Agent API 接入引导手册 (AGENT_GUIDE)
 
+**简体中文** | [English](AGENT_GUIDE.en.md)
+
 > 本指南专门写给接入 AdLink 的 **AI Agent（WorkBuddy、KimiWork、TraeWork、豆包工作、千问办公、Claude Code、Codex、Antigravity、Cursor、GrokBot、Muse、Dots 等）** 与 **FDE 实施工程师**。
 >
 > **核心定位提醒**：当各媒体平台已经推出各自官方 MCP 时，**AdLink 解决的是「媒体原始数据」与「企业高度定制化人-户关系、项目归属、财务口径、内部创作工时归因」之间的连接问题，避免在每个客户现场重复写死胶水代码，大幅降低研发与长期维护成本。**

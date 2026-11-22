@@ -1,15 +1,22 @@
 # AdLink — 广告投放数据底座与 AI-Native MCP 中间件
 
+**简体中文** | [English](README.en.md)
+
+[![CI](https://github.com/zyfjacksonchen-source/adlink/actions/workflows/ci.yml/badge.svg)](https://github.com/zyfjacksonchen-source/adlink/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-Workspace-orange.svg)](Cargo.toml)
+[![Platforms](https://img.shields.io/badge/Platforms-15%20(CN%20%2B%20Global)-brightgreen.svg)](docs/platform-api-mapping.md)
+
 > **数字化是 AI Native 的前提。** AdLink（Apache-2.0 开源可商用）是一个用 **Rust** 构建的高性能、高度解耦的广告数据治理与 MCP 中间件，打通 **国内 10 大连接器 + 海外 5 大主流平台（共 15 个平台连接器）**，支持多币种 FX 折算与企业内部治理、多端 AI Agent 生态以及高并发商业化生产服务端架构。
 
-[English README](README.en.md) · [Agent API 接入引导手册 (AGENT_GUIDE)](AGENT_GUIDE.md) · [Agent Skill (SKILL.md)](SKILL.md) · [官方 API 逐字段核对表](docs/platform-api-mapping.md) · [架构设计](docs/architecture.md) · [插件二开指南](docs/plugin-development.md)
+[English README](README.en.md) · [Agent API 接入引导手册 (中文)](AGENT_GUIDE.md) · [Agent Guide (EN)](AGENT_GUIDE.en.md) · [Agent Skill (SKILL.md)](SKILL.md) · [官方 API 逐字段核对表](docs/platform-api-mapping.md) · [架构设计](docs/architecture.md) · [插件二开指南](docs/plugin-development.md)
 
 ---
 
 ## 1. 项目目的与行业意义
 
 广告主与代理商在推进 **FDE（Forward Deployed Engineer / 商业数字化交付）与 AI 化转型** 时，往往卡在最底层的工程现实：
-1. **媒体协议碎片化、字段不统一**：腾讯、巨量、快手、小红书、B站、支付宝各平台单位不一致（分 vs 元 vs 厘）、时间跨度上限不同（1天/7天/30天/90天）、鉴权迥异（OAuth2 / Bearer+X-Call-Source / RSA2 签名）。
+1. **媒体协议碎片化、字段与币种不统一**：国内（腾讯、巨量、快手、小红书、B站、支付宝）与海外（TikTok、Meta、Google、Apple Search Ads、Amazon）各平台单位迥异（分 / 元 / 厘 / `micros` / `cents` + USD/EUR/GBP/JPY 多币种）、时间跨度上限不同（1天/7天/30天/31天/90天）、鉴权机制复杂（OAuth2 / `Bearer + X-Call-Source` / 支付宝 RSA2 / Google `developer-token` / Apple `ES256` P-256 JWT）。
 2. **只拉流水进不了生产环境**：没有理清 **人-户关系（含生效期与分摊权重）**、**项目类型分类**、**创意类型分类与内部创作者工时归因**、以及 **消耗口径 / 业绩口径 / 自定义口径** 的数据，AI Agent 拿到的只是一堆无法对账的脏表。
 3. **跨 Agent 重复造轮子**：WorkBuddy、KimiWork、TraeWork、豆包工作、千问办公、Claude Code、Codex、Antigravity、Cursor、GrokBot、Muse、Dots 以及自建 Agent 需要统一、可控、带安全护栏的 MCP 底座。
 
@@ -52,7 +59,7 @@ flowchart LR
 | **品牌/广告主 FDE 与 AI 转型负责人** | 搭建企业投放数据基座，让办公/代码 Agent 安全查数与调价 | 一站式容器部署 + MCP 三协议接入 + 安全护栏（默认 `dry_run` + 预算封顶 + 审计日志） |
 | **广告代理商技术 / 运营 / 媒介负责人** | 理清优化师/媒介人-户绑定、返点、服务费、现金/赠款、项目毛利 | 人户关系时效分摊 + 项目类型分类 + 消耗/业绩/自定义口径自动对账 |
 | **创意/内容团队负责人** | 量化编导/拍摄/剪辑/设计工时投入与投放 ROI，打通种草+加热 | 创意分类打标 + `note_id`/`bvid` 跨平台归因 + 创作者单小时产出 GMV |
-| **广告媒体研发人员** | 快速对接官方 Marketing API、长日期并发拉数与二次开发 | 官方字段映射零丢失保留 (`raw_fields`) + 纯 Rust 支付宝 RSA2 签名 + 插件化二开 |
+| **广告媒体研发人员** | 快速对接国内外官方 Marketing API、长日期并发拉数与二次开发 | 官方字段映射零丢失保留 (`raw_fields`) + 纯 Rust 支付宝 RSA2 & Apple ES256 JWT 签名 + 插件化二开 |
 
 ---
 
@@ -67,12 +74,12 @@ flowchart TB
         A4["用户自定义前端: Web 控制台 (web-starter/) · 微信/UniApp 小程序 SDK"]
     end
 
-    subgraph Transport["统一协议与入口层 (adlink-mcp + adlink-api)"]
-        T1["MCP Stdio (纯 stderr 日志)"]
-        T2["MCP Streamable HTTP (/mcp, 兼容有状态与无状态)"]
-        T3["MCP Legacy SSE (/sse + /messages)"]
-        T4["Headless REST /api/v1/* + OpenAPI 3.1 + UI Schema"]
-        T5["Bearer / X-Api-Key 鉴权中间件"]
+    subgraph Transport["统一协议、防护与高并发入口层 (adlink-mcp + adlink-api)"]
+        T1["MCP Stdio · Streamable HTTP (/mcp) · Legacy SSE (/sse)"]
+        T2["Headless REST /api/v1/* · 异步入队 /sync/jobs/enqueue (202) · OpenAPI 3.1"]
+        T3["自适应过载保护 (503) · 租户令牌桶限流 (429) · 超时控制 (504) · 幂等 (Idempotency-Key)"]
+        T4["Epoch 失效分析缓存 (X-Cache) · Prometheus (/metrics) · K8s 探针 (/healthz /readyz)"]
+        T5["Bearer / X-Api-Key 鉴权中间件 & 请求追踪 X-Request-Id"]
     end
 
     subgraph Kernel["微内核插件总线 (adlink-kernel · Cordis 理念)"]
@@ -82,12 +89,11 @@ flowchart TB
         K4["GuardrailPlugin: 创编默认关闭与询问 · 风险确认 · 预算/出价上限 · 审计记录"]
     end
 
-    subgraph Engine["高并发引擎与治理计算 (adlink-engine + adlink-domain + adlink-storage)"]
-        E1["日期切片器 DateRangeChunker (1d/7d/30d/90d)"]
-        E2["分级令牌桶 RateLimiterPool (平台级 + 账户级)"]
-        E3["断点续传 SyncCoordinator + 重试退避 RetryPolicy"]
-        E4["安全公式 AST 引擎 (消耗口径 / 业绩口径 / 自定义口径)"]
-        E5["SQLite WAL 事务批量写入 + 归因查询引擎"]
+    subgraph Engine["高并发引擎与 WAL 存储池 (adlink-engine + adlink-domain + adlink-storage)"]
+        E1["日期切片器 DateRangeChunker (1d/7d/30d/31d/90d) & 分级令牌桶 RateLimiterPool"]
+        E2["断点续传 SyncCoordinator · 多 Worker 异步队列 · Webhook 回调"]
+        E3["多币种 FX 折算引擎 FxRateTable & 安全公式 AST (消耗/业绩/自定义口径)"]
+        E4["SQLite WAL 读写分离连接池 (单写通道 write_epoch + N 并发只读池 + 停机 Checkpoint)"]
     end
 
     subgraph Connectors["15 大国内外媒体官方连接器插件层 (adlink-connectors)"]
@@ -178,7 +184,7 @@ cd adlink
 cargo build --release -p adlink-cli
 
 # 启动一体化服务（REST API + Streamable HTTP /mcp + Legacy SSE /sse + Web 控制台）
-# 自动播种「星图智投」全套人户关系/项目分类/创意归因及 30 天 10 平台模拟数据
+# 自动播种「星图智投」全套人户关系/项目分类/创意归因及 30 天国内外 15 平台模拟数据
 ./target/release/adlink serve --config config/adlink.mock.toml --seed-mock
 ```
 
@@ -186,6 +192,7 @@ cargo build --release -p adlink-cli
 - **Web 控制台**：`http://127.0.0.1:8787/`
 - **MCP Streamable HTTP**：`http://127.0.0.1:8787/mcp`
 - **MCP Legacy SSE**：`http://127.0.0.1:8787/sse`
+- **云原生探针与监控**：`http://127.0.0.1:8787/healthz` · `/readyz` · `/metrics`
 - **OpenAPI 3.1 规范**：`http://127.0.0.1:8787/api/v1/openapi.json`
 - **Schema-Driven UI 契约**：`http://127.0.0.1:8787/api/v1/ui/schema`
 
@@ -219,7 +226,7 @@ adlink mcp-config --client codex
 
 ---
 
-## 7. 国内外主流 Agent MCP 适配矩阵
+## 8. 国内外主流 Agent MCP 适配矩阵
 
 AdLink 同时支持 **Stdio**、**Streamable HTTP (2025/2026 有状态 & 无状态)**、**Legacy SSE**，开箱适配：
 
@@ -232,8 +239,8 @@ AdLink 同时支持 **Stdio**、**Streamable HTTP (2025/2026 有状态 & 无状�
 
 ### 引导用户 Agent 连接真实媒体 API
 
-部署完成后，您的 AI Agent 可直接读取项目内置的 **[AGENT_GUIDE.md](AGENT_GUIDE.md)** 与 **[SKILL.md](SKILL.md)**，或调用 MCP 工具（共 **24 个工具**）：
-1. `adlink_platform_catalog` & `adlink_onboard_guide` — 获取全部平台逐字段映射、认证步骤与创编能力说明。
+部署完成后，您的 AI Agent 可直接读取项目内置的 **[AGENT_GUIDE.md](AGENT_GUIDE.md)** / **[AGENT_GUIDE.en.md](AGENT_GUIDE.en.md)** 与 **[SKILL.md](SKILL.md)**，或调用 MCP 工具（共 **24 个工具**）：
+1. `adlink_platform_catalog` & `adlink_onboard_guide` — 获取全部 15 个平台逐字段映射、认证步骤与创编能力说明。
 2. `adlink_discover_platform_accounts` — 最优走官方 MCP 鉴权桥接、降级走媒体 API 直接拉取授权子账户列表。
 3. `adlink_relabel_account_governance`（重标人-户-项目关系）与 `adlink_fallback_bootstrap_project`（降级自建项目关联子账户）。
 
@@ -241,13 +248,13 @@ AdLink 同时支持 **Stdio**、**Streamable HTTP (2025/2026 有状态 & 无状�
 
 AdLink 已接入多平台广告创编能力（`adlink_creation_status_and_risks`、`adlink_ad_create` 与 `POST /api/v1/ad-creation/create`），但出于企业资金与合规安全原则，**默认恒为关闭**：
 - **默认行为**：`[ad_creation]` 中 `enabled = false`、`risk_acknowledged = false`；未授权调用创编时直接拦截并要求 Agent **先询问用户『是否需要接入广告创编（新建计划/单元/创意）能力？』**。
-- **强制 5 项风险提示**：（1）真实资金消耗与跨平台单位差异（快手创编用**厘**、腾讯/小红书用**分**、巨量用**元**）；（2）素材/文案审核拒审与账户封禁风险；（3）定向/落地页/归因错配风险；（4）媒体架构与白名单差异（腾讯 AMS v3.0 两层架构、小红书/B站需白名单、支付宝灯火/蒲公英/花火无公开自助创编 API）；（5）即便显式开启，仍强制 `initial_status = "PAUSED"` 暂停态创建、强制先过 `dry_run = true` 预览、受预算/出价硬上限保护并全量写入不可变审计日志。
+- **强制 5 项风险提示**：（1）真实资金消耗与跨平台单位/币种差异（快手创编用**厘**、腾讯/小红书用**分**、巨量与 TikTok 用主单位**元**、Meta 创编用 **cents**、Google 用 **micros**）；（2）素材/文案审核拒审与账户封禁风险；（3）定向/落地页/归因错配风险；（4）媒体架构与白名单差异（腾讯 AMS v3.0 两层架构、小红书/B站需白名单、支付宝灯火/蒲公英/花火无公开自助创编 API）；（5）即便显式开启，仍强制 `initial_status = "PAUSED"` 暂停态创建、强制先过 `dry_run = true` 预览、受预算/出价硬上限保护并全量写入不可变审计日志。
 
 详见逐字段核对表：[docs/platform-api-mapping.md](docs/platform-api-mapping.md)。
 
 ---
 
-## 8. 口径治理与创作工作量归因体系
+## 9. 口径治理与创作工作量归因体系
 
 - **消耗口径（Spend Calibers）**：
   - `账面总消耗` = 现金消耗 + 赠款消耗
@@ -264,7 +271,7 @@ AdLink 已接入多平台广告创编能力（`adlink_creation_status_and_risks`
 
 ---
 
-## 9. 网页与小程序多端自定义 (Headless + Schema-Driven UI)
+## 10. 网页与小程序多端自定义 (Headless + Schema-Driven UI)
 
 AdLink 内置零构建依赖的 `web-starter/` 控制台与 `web-starter/miniprogram-sdk/adlink-mp.js` 小程序 SDK：
 - 更换自定义前端只需将您的 React / Vue / Next.js 构建产物目录通过 `--web-dir ./my-dist` 传入即可；
@@ -272,6 +279,6 @@ AdLink 内置零构建依赖的 `web-starter/` 控制台与 `web-starter/minipro
 
 ---
 
-## 10. 开源协议
+## 11. 开源协议
 
 本项目采用 **[Apache License 2.0](LICENSE)** 开源，可放心用于商业交付、企业自建及二次开发。详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
